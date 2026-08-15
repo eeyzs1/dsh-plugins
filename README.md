@@ -29,4 +29,4 @@ plugins/<id>/
 
 | 目录 | 说明 |
 |------|------|
-| [`plugins/attach-files`](plugins/attach-files/README.md) | 输入框加「📁 添加文件」按钮，选择文件/目录并把内容注入对话草稿 |
+| [`plugins/attach-files`](plugins/attach-files/README.md) | 输入框加「📁 添加文件」按钮，把所选文件/目录以 `@file:`/`@dir:` 路径引用插入对话 |

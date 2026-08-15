@@ -57,31 +57,6 @@ return {
       return (n / 1024 / 1024).toFixed(1) + ' MB'
     }
 
-    function formatMessage(res) {
-      const files = res.files || []
-      const dirs = res.dirs || []
-      const skipped = res.skipped || 0
-      const exhausted = res.budgetExhausted || false
-      const out = []
-      out.push('📎 已添加文件/目录到对话（' + files.length + ' 个文件' + (dirs.length ? '，' + dirs.length + ' 个目录' : '') + '）')
-      out.push('')
-      for (const d of dirs) out.push('📁 目录：' + d)
-      if (dirs.length) out.push('')
-      for (const f of files) {
-        out.push('━━━━ ' + f.path + ' ━━━━')
-        if (f.content != null) {
-          out.push(f.content)
-          if (f.truncated) out.push('\n…[内容过长，已截断]')
-        } else {
-          out.push('[无法读取文本内容]')
-        }
-        out.push('')
-      }
-      if (skipped > 0) out.push('（跳过 ' + skipped + ' 个二进制/不可读文件）')
-      if (exhausted) out.push('（部分文件因总量过大未读取）')
-      return out.join('\n')
-    }
-
     function AttachControl(props) {
       const [open, setOpen] = React.useState(false)
       const [cwd, setCwd] = React.useState('')
@@ -90,7 +65,6 @@ return {
       const [loading, setLoading] = React.useState(false)
       const [error, setError] = React.useState('')
       const [selected, setSelected] = React.useState({})
-      const [busy, setBusy] = React.useState(false)
 
       const loadDir = async (path) => {
         setLoading(true); setError('')
@@ -134,26 +108,15 @@ return {
         if (p && p !== cwd) loadDir(p)
       }
 
-      const addToDraft = async () => {
+      const addToDraft = () => {
         const sels = Object.keys(selected).map((k) => selected[k])
         if (sels.length === 0) return
-        setBusy(true); setError('')
-        try {
-          const res = await host.call('attachfs/gather', { selections: sels })
-          if (res && res.ok) {
-            const text = formatMessage(res)
-            const cur = props.input ? props.input.draft : ''
-            const draft = cur ? cur + '\n\n' + text : text
-            if (props.inputActions) props.inputActions.setDraft(draft)
-            setOpen(false)
-          } else {
-            setError((res && res.error) || '读取失败')
-          }
-        } catch (e) {
-          setError(String(e && e.message ? e.message : e))
-        } finally {
-          setBusy(false)
-        }
+        const refs = sels.map((s) => (s.type === 'directory' ? '@dir:' : '@file:') + s.path)
+        const text = refs.join('\n')
+        const cur = props.input ? props.input.draft : ''
+        const draft = cur ? cur + '\n' + text : text
+        if (props.inputActions) props.inputActions.setDraft(draft)
+        setOpen(false)
       }
 
       const row = (entry, isDir) => {
@@ -235,15 +198,15 @@ return {
             React.createElement('button', {
               className: 'dsh-attach-primary',
               onClick: addToDraft,
-              disabled: selCount === 0 || busy,
-            }, busy ? '读取中…' : '添加到对话'),
+              disabled: selCount === 0,
+            }, '添加路径'),
           ),
         ),
       )
 
       const backdrop = React.createElement('div', {
         className: 'dsh-attach-backdrop',
-        onClick: () => { if (!busy) setOpen(false) },
+        onClick: () => setOpen(false),
       }, panel)
 
       return React.createElement(React.Fragment, null, btn, backdrop)

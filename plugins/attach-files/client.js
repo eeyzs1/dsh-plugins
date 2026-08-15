@@ -92,13 +92,6 @@ return {
       const [selected, setSelected] = React.useState({})
       const [busy, setBusy] = React.useState(false)
 
-      const workspaceCwd = props.useSessions
-        ? props.useSessions((s) => {
-            const rec = (s && s.byId && props.sessionId) ? s.byId[props.sessionId] : undefined
-            return rec ? rec.cwd : ''
-          })
-        : ''
-
       const loadDir = async (path) => {
         setLoading(true); setError('')
         try {
@@ -120,12 +113,8 @@ return {
       const openPicker = async () => {
         setOpen(true); setSelected({}); setError('')
         try {
-          let root = workspaceCwd
-          if (!root) {
-            const r = await host.call('attachfs/root', {})
-            root = (r && r.root) || ''
-          }
-          await loadDir(root || '')
+          const r = await host.call('attachfs/root', { sessionId: props.sessionId })
+          await loadDir((r && r.root) || '')
         } catch (e) {
           setError(String(e && e.message ? e.message : e))
         }
@@ -153,7 +142,7 @@ return {
           const res = await host.call('attachfs/gather', { selections: sels })
           if (res && res.ok) {
             const text = formatMessage(res)
-            const cur = props.useInput ? props.useInput((s) => s.draft) : ''
+            const cur = props.input ? props.input.draft : ''
             const draft = cur ? cur + '\n\n' + text : text
             if (props.inputActions) props.inputActions.setDraft(draft)
             setOpen(false)

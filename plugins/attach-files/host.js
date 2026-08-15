@@ -11,10 +11,32 @@ return {
       path: fs.processPath(e.target),
     })
 
-    harness.handle('attachfs/root', async () => {
-      const root = (sandboxPolicy && typeof sandboxPolicy.workspaceRoot === 'string')
-        ? sandboxPolicy.workspaceRoot
-        : ''
+    harness.handle('attachfs/root', async (args) => {
+      let root = ''
+      const sid = (args && typeof args.sessionId === 'string') ? args.sessionId : ''
+      if (sid) {
+        const sessions = ctx.get('sessions')
+        if (sessions && typeof sessions.get === 'function') {
+          try {
+            const s = sessions.get(sid)
+            const cwd = s && s.header && typeof s.header.cwd === 'string' ? s.header.cwd : ''
+            if (cwd) root = cwd
+          } catch (e) { /* ignore */ }
+        }
+        if (!root) {
+          const sp = ctx.get('sessionPersistence')
+          if (sp && typeof sp.list === 'function') {
+            try {
+              const headers = await sp.list()
+              const hit = headers.find((h) => h && String(h.id) === sid)
+              if (hit && typeof hit.cwd === 'string' && hit.cwd) root = hit.cwd
+            } catch (e) { /* ignore */ }
+          }
+        }
+      }
+      if (!root && sandboxPolicy && typeof sandboxPolicy.workspaceRoot === 'string') {
+        root = sandboxPolicy.workspaceRoot
+      }
       return { root: root }
     })
 

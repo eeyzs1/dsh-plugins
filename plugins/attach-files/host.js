@@ -59,5 +59,23 @@ return {
         return { ok: false, error: String(err && err.message ? err.message : err) }
       }
     })
+
+    harness.handle('attachfs/read', async (args) => {
+      const paths = (args && Array.isArray(args.paths)) ? args.paths : []
+      const MAX_FILE = 100000
+      const files = []
+      for (const p of paths) {
+        try {
+          const target = await fs.resolve(String(p))
+          let text = await fs.readText(target)
+          let truncated = false
+          if (text.length > MAX_FILE) { text = text.slice(0, MAX_FILE); truncated = true }
+          files.push({ path: String(p), content: text, truncated: truncated })
+        } catch (err) {
+          files.push({ path: String(p), content: null, note: String(err && err.message ? err.message : err) })
+        }
+      }
+      return { ok: true, files: files }
+    })
   },
 }

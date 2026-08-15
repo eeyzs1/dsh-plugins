@@ -65,6 +65,7 @@ return {
       const [loading, setLoading] = React.useState(false)
       const [error, setError] = React.useState('')
       const [selected, setSelected] = React.useState({})
+      const [busy, setBusy] = React.useState(false)
 
       const loadDir = async (path) => {
         setLoading(true); setError('')
@@ -108,15 +109,58 @@ return {
         if (p && p !== cwd) loadDir(p)
       }
 
-      const addToDraft = () => {
+      const addPaths = () => {
         const sels = Object.keys(selected).map((k) => selected[k])
         if (sels.length === 0) return
-        const refs = sels.map((s) => (s.type === 'directory' ? '@dir:' : '@file:') + s.path)
+        const refs = sels.map((s) => {
+          if (s.type === 'directory') return '@dir:' + s.path
+          return '@file:' + s.path + (s.size != null ? ' (' + fmtSize(s.size) + ')' : '')
+        })
         const text = refs.join('\n')
         const cur = props.input ? props.input.draft : ''
         const draft = cur ? cur + '\n' + text : text
         if (props.inputActions) props.inputActions.setDraft(draft)
         setOpen(false)
+      }
+
+      const expandContent = async () => {
+        const sels = Object.keys(selected).map((k) => selected[k])
+        if (sels.length === 0) return
+        const fileSels = sels.filter((s) => s.type !== 'directory')
+        const dirSels = sels.filter((s) => s.type === 'directory')
+        setBusy(true); setError('')
+        try {
+          const parts = []
+          if (fileSels.length > 0) {
+            const res = await host.call('attachfs/read', { paths: fileSels.map((s) => s.path) })
+            if (res && res.ok) {
+              for (const f of res.files) {
+                parts.push('━━━━ ' + f.path + ' ━━━━')
+                if (f.content != null) {
+                  parts.push(f.content)
+                  if (f.truncated) parts.push('…[内容过长，已截断]')
+                } else {
+                  parts.push('[无法读取：' + (f.note || '未知错误') + ']')
+                }
+                parts.push('')
+              }
+            } else {
+              setError((res && res.error) || '读取失败')
+            }
+          }
+          for (const d of dirSels) parts.push('@dir:' + d.path)
+          const text = parts.join('\n')
+          if (text) {
+            const cur = props.input ? props.input.draft : ''
+            const draft = cur ? cur + '\n\n' + text : text
+            if (props.inputActions) props.inputActions.setDraft(draft)
+          }
+          setOpen(false)
+        } catch (e) {
+          setError(String(e && e.message ? e.message : e))
+        } finally {
+          setBusy(false)
+        }
       }
 
       const row = (entry, isDir) => {
@@ -196,8 +240,13 @@ return {
           React.createElement('div', { className: 'dsh-attach-actions' },
             React.createElement('button', { className: 'dsh-attach-ghost', onClick: () => setOpen(false) }, '取消'),
             React.createElement('button', {
+              className: 'dsh-attach-ghost',
+              onClick: expandContent,
+              disabled: selCount === 0 || busy,
+            }, busy ? '读取中…' : '展开内容'),
+            React.createElement('button', {
               className: 'dsh-attach-primary',
-              onClick: addToDraft,
+              onClick: addPaths,
               disabled: selCount === 0,
             }, '添加路径'),
           ),
@@ -206,7 +255,7 @@ return {
 
       const backdrop = React.createElement('div', {
         className: 'dsh-attach-backdrop',
-        onClick: () => setOpen(false),
+        onClick: () => { if (!busy) setOpen(false) },
       }, panel)
 
       return React.createElement(React.Fragment, null, btn, backdrop)

@@ -1,0 +1,10 @@
+{
+  "idPrefix": "attach",
+  "name": "添加文件/目录到对话",
+  "purpose": "在输入框提供「添加文件」按钮，用文件/目录选择器把所选内容注入对话草稿。",
+  "version": "1.0.0",
+  "entry": {
+    "host": "host.js",
+    "client": "client.js"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DSH 动态插件 manifest",
+  "description": "plugins/<id>/manifest.json 的约定。实际校验逻辑在 scripts/check.js（本文件仅作文档，不参与运行时校验）。",
+  "type": "object",
+  "required": ["idPrefix", "name", "purpose", "entry"],
+  "properties": {
+    "idPrefix": {
+      "type": "string",
+      "pattern": "^[a-z]{3,6}$",
+      "description": "cordis_define 的 plugin.idPrefix：3–6 个小写英文字母。"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "插件显示名，对应 cordis_define 的 name。"
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1,
+      "description": "一句话用途，对应 cordis_define 的 purpose。"
+    },
+    "version": {
+      "type": "string",
+      "description": "可选，插件自身版本号（纯文档用）。"
+    },
+    "description": {
+      "type": "string",
+      "description": "可选，更长的说明（索引/文档用）。"
+    },
+    "entry": {
+      "type": "object",
+      "description": "入口文件。host / client 至少提供一个。",
+      "properties": {
+        "host": { "type": "string", "description": "Host 端源码文件名（相对本目录）。" },
+        "client": { "type": "string", "description": "Client 端源码文件名（相对本目录）。" }
+      }
+    }
+  },
+  "additionalProperties": true
+}

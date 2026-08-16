@@ -1,0 +1,9 @@
+{
+  "name": "dsh-plugins",
+  "private": true,
+  "description": "DeepSeek Harness (DSH) 动态 Cordis 插件集合",
+  "scripts": {
+    "check": "node scripts/check.js"
+  },
+  "license": "MIT"
+}

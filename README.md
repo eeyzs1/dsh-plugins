@@ -2,6 +2,8 @@
 
 DeepSeek Harness（DSH）**动态 Cordis 插件**集合。每个插件一个目录，结构固定：
 
+> ⚠️ 动态插件不跨 DSH 重启。重启后如何恢复见 **[LOAD.md](LOAD.md)**（一句「加载插件」即可）。
+
 ```
 plugins/<id>/
 ├── manifest.json   # 元数据：idPrefix / 名称 / 用途 / 入口文件

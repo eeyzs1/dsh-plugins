@@ -1,0 +1,9 @@
+{
+  "idPrefix": "chime",
+  "name": "回合完成与互动提示音",
+  "purpose": "LLM 回合完成或模型等待用户输入（工具审批 / 提问）时在浏览器播放提示音，可在设置中调节音量。",
+  "version": "1.0.0",
+  "entry": {
+    "client": "client.js"
+  }
+}

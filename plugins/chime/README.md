@@ -6,10 +6,13 @@
 
 | 场景 | 检测信号 | 提示音 |
 |------|---------|--------|
-| LLM 回合完成 | 会话 `running` 从 `true → false` | 上行双音（叮-咚） |
-| 需要用户做选择 | 会话 `pending`（工具审批 `approval` / 提问 `question`）从空 → 非空 | 下行双音（音色不同，便于区分） |
+| LLM 回合完成 | 任一会话 `running` 从 `true → false`（或后台会话 `completed` 置真） | 上行双音（叮-咚） |
+| 需要用户做选择 | 任一会话 `pendingInteraction`（审批 `approval` / 提问 `question` / 计划评审）从无 → 有 | 下行双音（音色不同，便于区分） |
 
-只在**状态切换**时响铃，页面加载、切换会话时不会误响。
+**覆盖所有对话**：通知器挂在根级常驻槽 `shell.overlay`，通过 `useSessions` 监听全局会话列表，
+因此无论你正看着哪个工作区/对话，**任何对话**（包括后台的）回合完成或等待输入都会响铃。
+
+只在**状态切换**时响铃，页面加载、切换会话、新会话首次出现时不会误响。
 
 ## 音量调节
 
@@ -24,9 +27,9 @@
 ## 依赖（运行时自动具备）
 
 - **Client**：
-  - `conversation.composer.dock` 槽位（注册一个渲染 `null` 的静默通知器）
+  - `shell.overlay` 槽位（根级常驻，注册一个渲染 `null` 的静默通知器）
   - `settings.general.item` 槽位（音量滑块行）
-  - 标准 prop `useSession`（读取 `session.running` / `session.pending`）
+  - 标准 prop `useSessions`（读取全局会话列表的 `running` / `pendingInteraction` / `completed`）
 - 浏览器全局 `window.AudioContext`（Web Audio 合成音，无需外链资源）
 
 ## 已知边界
@@ -34,3 +37,4 @@
 - 插件刚激活、页面尚未有过任何交互时，浏览器自动播放策略可能拦截**第一声**；
   之后每次发消息 / 点击都会解锁音频，恢复正常。
 - 音量不持久化，重启后回到默认值（见上）。
+- 多标签页场景：动态 client 插件只作用于加载它的那个页面；如需跨浏览器窗口统一响铃，需要宿主导向的推送通道（当前不在本插件范围内）。

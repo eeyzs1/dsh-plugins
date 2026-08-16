@@ -52,29 +52,46 @@ return {
       })
     }
 
-    // --- 静默通知器：在回合完成 / 待处理互动出现时响铃 ---
+    // --- 全局通知器：挂在根级常驻槽 shell.overlay，监听「会话列表」而非单个会话 ---
+    // 会话列表的 SessionSummary 自带 running / pendingInteraction / completed，
+    // 因此无论你正看着哪个对话，任何对话的回合完成或需要输入都能触发。
     const Notifier = (props) => {
-      const useSession = props.useSession
-      const running = useSession((s) => !!s.running)
-      const pendingCount = useSession((s) => (Array.isArray(s.pending) ? s.pending.length : 0))
+      const useSessions = props.useSessions
+      const list = useSessions((s) => s)
 
       // 提前解锁音频，避免浏览器自动播放策略吞掉第一声。
       React.useEffect(() => { getAudioCtx() }, [])
 
-      const prev = React.useRef({ running, pendingCount })
+      const prev = React.useRef(null)
       React.useEffect(() => {
-        const p = prev.current
-        if (p.running && !running) playChime('done')        // 回合完成
-        if (p.pendingCount === 0 && pendingCount > 0) playChime('action') // 需要选择
-        prev.current = { running, pendingCount }
-      }, [running, pendingCount])
+        const byId = (list && list.byId) ? list.byId : {}
+        const cur = {}
+        for (const id in byId) {
+          const s = byId[id]
+          if (!s) continue
+          cur[id] = {
+            done: !s.running || !!s.completed,
+            pending: !!s.pendingInteraction,
+          }
+        }
+        if (prev.current === null) { prev.current = cur; return }
+        const before = prev.current
+        for (const id in cur) {
+          const b = before[id]
+          const a = cur[id]
+          if (!b) continue // 通知器挂载后才出现的会话，首次不响
+          if (!b.done && a.done) playChime('done')         // 任一对话回合完成
+          if (!b.pending && a.pending) playChime('action') // 任一对话需要选择
+        }
+        prev.current = cur
+      }, [list])
 
       return null
     }
 
-    slots.inject('conversation.composer.dock', () => slots.register(
-      { name: 'conversation.composer.dock', id: 'turn-sound', order: 0 },
-      (props) => React.createElement(Notifier, { useSession: props.useSession }),
+    slots.inject('shell.overlay', () => slots.register(
+      { name: 'shell.overlay', id: 'turn-sound', order: 0 },
+      (props) => React.createElement(Notifier, { useSessions: props.useSessions }),
     ))
 
     // --- 设置 > 常规 里的音量行 ---

@@ -2,7 +2,20 @@
 
 DeepSeek Harness（DSH）**动态 Cordis 插件**集合。
 
-> ⚠️ 动态插件不跨 DSH 重启。重启后如何恢复见 [LOAD.md](LOAD.md)（一句「加载插件」即可）。
+> ⚠️ 动态插件不跨 DSH 重启。重启后如何恢复见 [LOAD.md](LOAD.md)（一句「加载所有插件」即可）。
+
+## 包含插件
+
+完整索引见 [PLUGINS.md](PLUGINS.md)（由 `scripts/check.js` 自动生成），当前有：
+
+- [chime](plugins/chime/README.md) — 回合完成与互动提示音（纯 Client，Web Audio 合成 + 音量调节）
+- [attach-files](plugins/attach-files/README.md) — 添加文件/目录到对话（📁 按钮 + 文件选择器）
+
+## 社区
+
+- 本仓库在 GitHub 标记了 [`dsh-plugin`](https://github.com/topics/dsh-plugin) 话题，便于社区发现。
+- 插件展示：[Show Your Plugins! #2528](https://github.com/deepseek-ai/deepseek-harness/discussions/2528)
+- 功能请求（用户级、重启后自动加载的插件目录）：[Ideas #2527](https://github.com/deepseek-ai/deepseek-harness/discussions/2527)
 
 ## 仓库结构
 

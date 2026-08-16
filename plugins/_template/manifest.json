@@ -1,0 +1,10 @@
+{
+  "idPrefix": "demo",
+  "name": "示例插件",
+  "purpose": "一句话描述这个插件做什么（会显示在索引里）。",
+  "version": "0.1.0",
+  "entry": {
+    "host": "host.js",
+    "client": "client.js"
+  }
+}

@@ -22,6 +22,8 @@ dsh-plugins/
 
 ## 加一个插件
 
+> 快捷方式：复制 [plugins/_template/](plugins/_template/) 改名即可（`_` 开头目录会被校验跳过）。
+
 1. 建 `plugins/<id>/` 目录（`<id>` 用 kebab-case，如 `attach-files`）。
 2. 写 `manifest.json`，字段约定见 [manifest.schema.json](manifest.schema.json)：
    - `idPrefix`：3–6 个小写字母（`cordis_define` 的 `plugin.idPrefix`）

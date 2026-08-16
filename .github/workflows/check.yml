@@ -13,3 +13,21 @@ jobs:
         with:
           node-version: 22
       - run: node scripts/check.js
+
+  # push 后自动把 check.js 重新生成的 PLUGINS.md 提交回仓库，
+  # 避免作者忘跑本地校验导致索引漂移。PR 分支不自动提交。
+  refresh-index:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/check.js
+      - uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: refresh plugin index [skip ci]"
+          file_pattern: PLUGINS.md

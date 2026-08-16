@@ -75,6 +75,7 @@ function main() {
   }
 
   const ids = fs.readdirSync(PLUGINS_DIR).filter((id) => {
+    if (id.startsWith('_') || id.startsWith('.')) return false // 跳过模板/隐藏目录
     return fs.statSync(path.join(PLUGINS_DIR, id)).isDirectory()
   }).sort()
 

@@ -32,7 +32,12 @@ exports.apply = function apply(ctx) {
   })
 
   const playChime = (kind) => {
-    const peak = Math.max(0, Math.min(1, volume))
+    // Perceptual loudness curve: amplitude = volume^1.4 * 1.75 (clipped to 1.0).
+    // A linear 0..1 amplitude under-sells the top and makes 1..100 feel alike;
+    // the power curve spreads the audible steps so each slider notch is clearly
+    // louder, and the top is genuinely loud.
+    const raw = Math.pow(Math.max(0, Math.min(1, volume)), 1.4) * 1.75
+    const peak = Math.min(1, raw)
     if (peak <= 0.0001) return
     const ac = getAudioCtx()
     if (ac === null) return

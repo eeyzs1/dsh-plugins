@@ -40,13 +40,17 @@ const CSS = `
 }
 `
 
-exports.inject = ['slots', 'connection']
+exports.inject = ['slots']
 
 exports.apply = function apply(ctx) {
   const slots = ctx.slots
-  const rpc = ctx.connection.rpc
+  // connection is provided at the client root; read it defensively so a missing
+  // service never aborts apply (mirrors chime, which injects only 'slots').
+  const connection = ctx.get ? ctx.get('connection') : undefined
+  const rpc = connection && connection.rpc ? connection.rpc : null
 
   const callAttach = async (endpoint, args) => {
+    if (!rpc) return { error: 'connection rpc unavailable' }
     const res = await rpc.call('/attach', endpoint, args)
     return res && res.ok === true ? res.value : { error: (res && res.error && res.error.message) || 'attach rpc failed' }
   }

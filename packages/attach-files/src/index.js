@@ -9,7 +9,7 @@ export function apply(ctx) {
   const connection = ctx.connection
   const handler = async (endpoint, payload) => {
     try {
-      if (endpoint === 'root') return { ok: true, value: { root: await rootOf(payload) } }
+      if (endpoint === 'root') return { ok: true, value: await rootOf(payload) }
       if (endpoint === 'list') return { ok: true, value: await listDir(payload) }
       if (endpoint === 'read') return { ok: true, value: await readFiles(payload) }
       return { ok: false, error: { code: 'internal', message: `unknown endpoint ${endpoint}`, details: {} } }

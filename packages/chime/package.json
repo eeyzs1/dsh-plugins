@@ -1,0 +1,33 @@
+{
+  "name": "@eeyzs1/dsh-chime",
+  "version": "1.0.1",
+  "description": "Play a chime when any conversation finishes a turn or waits for user input.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/index.js",
+    "lib/client.js",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "node ./build.mjs",
+    "prepack": "node ./build.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  },
+  "license": "MIT"
+}

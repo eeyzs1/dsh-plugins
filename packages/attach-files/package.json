@@ -1,0 +1,33 @@
+{
+  "name": "@eeyzs1/dsh-attach-files",
+  "version": "1.0.0",
+  "description": "Add files/directories to the conversation as @file:/@dir: references or expanded content.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/index.js",
+    "lib/client.js",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "node ./build.mjs",
+    "prepack": "node ./build.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  },
+  "license": "MIT"
+}

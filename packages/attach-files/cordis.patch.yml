@@ -1,0 +1,5 @@
+# 本 bundle 的组合补丁：插入一行 host 插件，使本包成为 loader 条目，
+# 从而让 clientModules 发现 dsh.client 声明并服务其 client bundle。
+- insert:
+    - id: attach-files
+      name: '@eeyzs1/dsh-attach-files'

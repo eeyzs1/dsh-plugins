@@ -58,7 +58,9 @@ dsh plugin --profile web add <包名或本地路径>
 
 | 插件 | 形态 | 开机自启 |
 |------|------|---------|
-| attach-files | 动态插件（已收进本仓库） | 否（待转真实包） |
-| chime | 动态插件（已收进本仓库） | 否（待转真实包） |
+| attach-files | **真实包** `packages/attach-files`（已装进 profile） | ✅ 是 |
+| chime | **真实包** `packages/chime`（已装进 profile） | ✅ 是 |
 
-> 把这两个插件转成真实包（`dsh.bundle` + `dsh.client`）的工作在进行中。
+> 两个插件都已转为真实包并通过 `dsh plugin --profile web add` 安装到 `$DSH_HOME/profiles/web`，
+> `pnpm dsh web` 开机自动加载。源码改动经 `link:` 即时生效（改完重启 web）。
+> `plugins/` 下的动态写法仍保留，作为快速原型/对照，不参与开机自启。

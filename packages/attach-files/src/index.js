@@ -1,7 +1,12 @@
 // Host half of @eeyzs1/dsh-attach-files.
 // Exposes the three original attachfs RPCs (root / list / read) over a
-// lightweight client-connection RPC channel (/attach), as real packages do
-// instead of the dynamic-only harness.handle.
+// lightweight client-connection RPC channel (/attach). Listing uses Node's
+// fs/promises directly with per-entry tolerance, so a permission-protected
+// child (e.g. E:\System Volume Information) is skipped instead of aborting the
+// whole directory listing — this is what makes full-disk browsing work.
+import { readdir, stat, readFile } from 'node:fs/promises'
+import { join, isAbsolute } from 'node:path'
+
 export const name = '@eeyzs1/dsh-attach-files'
 export const inject = ['connection']
 
@@ -21,12 +26,11 @@ export function apply(ctx) {
     }
   }
 
-  // Register once; the returned disposer is owned by ctx.effect so stop/update
-  // removes the channel with the fiber.
+  // Register once; the disposer is owned by ctx.effect so stop/update removes
+  // the channel with the fiber.
   ctx.effect(() => connection.rpc.handle('/attach', handler, { authority: 'loopback' }))
 
   async function rootOf(args) {
-    const fs = ctx.get('fs')
     let root = ''
     const sid = (args && typeof args.sessionId === 'string') ? args.sessionId : ''
     if (sid) {
@@ -49,8 +53,7 @@ export function apply(ctx) {
         }
       }
     }
-    if (!root && fs && fs.workspaceRoot != null) root = fs.workspaceRoot
-    else if (!root) {
+    if (!root) {
       const sandboxPolicy = ctx.get('sandboxPolicy')
       if (sandboxPolicy && typeof sandboxPolicy.workspaceRoot === 'string') root = sandboxPolicy.workspaceRoot
     }
@@ -58,41 +61,54 @@ export function apply(ctx) {
   }
 
   async function listDir(args) {
-    const fs = ctx.get('fs')
-    const path = (args && typeof args.path === 'string') ? args.path : ''
-    const asEntry = (e) => ({
-      name: e.name,
-      type: e.type,
-      size: e.size != null ? e.size : null,
-      path: fs.processPath(e.target),
-    })
-    const target = await fs.resolve(path)
-    const info = await fs.stat(target)
-    if (info === undefined) {
-      return { ok: false, error: { code: 'directory-unreadable', message: '路径不存在：' + path, details: { path } } }
+    let path = (args && typeof args.path === 'string') ? args.path : ''
+
+    // Bare drive root ("C:") → trailing slash form so readdir works.
+    if (/^[A-Za-z]:$/.test(path)) path = path + '\\'
+    if (!isAbsolute(path) || path === '') {
+      return { ok: false, error: { code: 'directory-unreadable', message: '不是绝对路径：' + path, details: { path } } }
     }
-    if (info.type !== 'directory') {
-      return { ok: false, error: { code: 'directory-unreadable', message: '不是目录：' + path, details: { path } } }
+
+    let dirents
+    try {
+      dirents = await readdir(path, { withFileTypes: true })
+    } catch (err) {
+      return { ok: false, error: { code: 'directory-unreadable', message: String(err && err.message ? err.message : err), details: { path } } }
     }
-    const entries = await fs.listDir(target)
+
     const dirs = []
     const files = []
-    for (const e of entries) {
-      if (e.type === 'directory') dirs.push(asEntry(e))
-      else if (e.type === 'file') files.push(asEntry(e))
+    for (const d of dirents) {
+      const child = join(path, d.name)
+      let isDir = d.isDirectory()
+      let isFile = d.isFile()
+      let size = null
+      // Symlinks and unknown types need a stat probe; skip if the probe fails
+      // (permission, vanished, etc.) so one bad child never aborts the list.
+      try {
+        if (!isDir && !isFile) {
+          const st = await stat(child)
+          isDir = st.isDirectory()
+          isFile = st.isFile()
+        }
+        if (isFile) size = (await stat(child)).size
+      } catch (e) {
+        continue // unreadable child — skip
+      }
+      if (isDir) dirs.push({ name: d.name, type: 'directory', size: null, path: child })
+      else if (isFile) files.push({ name: d.name, type: 'file', size, path: child })
     }
-    return { ok: true, path: fs.processPath(target), dirs, files }
+    return { ok: true, path, dirs, files }
   }
 
   async function readFiles(args) {
-    const fs = ctx.get('fs')
     const paths = (args && Array.isArray(args.paths)) ? args.paths.map((p) => String(p)) : []
     const MAX_FILE = 100000
     const files = []
     for (const p of paths) {
       try {
-        const target = await fs.resolve(p)
-        let text = await fs.readText(target)
+        const buf = await readFile(p)
+        let text = buf.toString('utf8')
         let truncated = false
         if (text.length > MAX_FILE) { text = text.slice(0, MAX_FILE); truncated = true }
         files.push({ path: p, content: text, truncated })

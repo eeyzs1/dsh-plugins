@@ -29,22 +29,17 @@ exports.apply = function apply(ctx) {
     }
   })
 
-  // Shared overlay flash state so the user can distinguish "sound fired but too
-  // quiet / muted" from "sound never fired at all": each chime paints a brief
-  // dot in the top-right corner.
-  const flashListeners = []
-  const fireFlash = () => { flashListeners.forEach((fn) => fn()) }
+  // no flash overlay — the user is away from the screen and relies on audio
 
   const playChime = (kind) => {
-    // Louder perceptual curve than before, plus a low floor so even small
-    // slider values stay audible: amplitude = max(0.06, volume^1.2 * 1.9).
+    // Audible at any reasonable setting exactly because the user is usually NOT
+    // looking at the screen. A loud-enough floor plus a brighter timbre.
     const raw = Math.pow(Math.max(0, Math.min(1, volume)), 1.2) * 1.9
-    const peak = Math.max(0.06, Math.min(1, raw))
+    const peak = Math.max(0.08, Math.min(1, raw))
     const ac = getAudioCtx()
     if (ac === null) return
-    fireFlash()
 
-    // Each note is a sine plus its octave (2x) for a brighter, harder-to-miss
+    // Each note = sine plus its octave (2x) for a brighter, harder-to-miss
     // timbre; 'action' repeats the pair to grab attention, 'done' plays a
     // short ascending triad.
     const synth = (freq, at, dur, vol) => {
@@ -65,50 +60,14 @@ exports.apply = function apply(ctx) {
 
     const t0 = ac.currentTime
     if (kind === 'done') {
-      // 659 → 784 → 988 (E5 → G5 → B5), short and bright.
-      const seq = [[659.25, 0, 0.13], [783.99, 0.14, 0.13], [987.77, 0.28, 0.22]]
-      seq.forEach(([f, at, d]) => synth(f, t0 + at, d, 0.7))
+      // 659 → 784 → 988 (E5 → G5 → B5), a bit longer so it carries.
+      const seq = [[659.25, 0, 0.16], [783.99, 0.17, 0.16], [987.77, 0.34, 0.28]]
+      seq.forEach(([f, at, d]) => synth(f, t0 + at, d, 0.75))
     } else {
       // Repeated descending pair — clearly different and more noticeable.
-      const seq = [[880, 0, 0.12], [440, 0.11, 0.16], [880, 0.28, 0.12], [440, 0.39, 0.2]]
+      const seq = [[880, 0, 0.13], [440, 0.13, 0.18], [880, 0.34, 0.13], [440, 0.47, 0.24]]
       seq.forEach(([f, at, d]) => synth(f, t0 + at, d, 0.85))
     }
-  }
-
-  // Visual flash dot: a small "ping" painted in the top-right when a chime
-  // fires, so the user can tell audio-firing apart from audio-too-quiet/muted.
-  function FlashDot() {
-    const [visible, setVisible] = React.useState(false)
-    React.useEffect(() => {
-      if (!visible) return
-      const t = setTimeout(() => setVisible(false), 600)
-      return () => clearTimeout(t)
-    }, [visible])
-    React.useEffect(() => {
-      const onFlash = () => setVisible(true)
-      flashListeners.push(onFlash)
-      return () => {
-        const i = flashListeners.indexOf(onFlash)
-        if (i >= 0) flashListeners.splice(i, 1)
-      }
-    }, [])
-    return visible
-      ? React.createElement('div', {
-          style: {
-            position: 'fixed',
-            top: '14px',
-            right: '14px',
-            width: '10px',
-            height: '10px',
-            borderRadius: '50%',
-            background: '#f59e0b',
-            opacity: 0.9,
-            zIndex: 2147483647,
-            pointerEvents: 'none',
-            boxShadow: '0 0 12px 3px rgba(245,158,11,.8)',
-          },
-        })
-      : null
   }
 
   const Notifier = (props) => {
@@ -141,7 +100,7 @@ exports.apply = function apply(ctx) {
       prev.current = cur
     }, [list])
 
-    return React.createElement(FlashDot)
+    return null
   }
 
   ctx.slots.inject('shell.overlay', () => ctx.slots.register(

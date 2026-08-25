@@ -83,8 +83,19 @@ exports.apply = function apply(ctx) {
       for (const id in byId) {
         const s = byId[id]
         if (!s) continue
+        // Projection value carries the goal snapshot (goal.goal.phase) when the
+        // session is under a goal; null/absent when none.
+        const goalPhase = s.projectionValues && s.projectionValues.goal
+          ? s.projectionValues.goal.goal && s.projectionValues.goal.goal.phase
+          : undefined
+        const hasGoal = goalPhase !== undefined
+        const goalDone = goalPhase === 'complete'
         cur[id] = {
-          done: !s.running || !!s.completed,
+          // 'done' should ring only on a MEANINGFUL completion: under a goal,
+          // only when the goal actually completes (not on each intermediate
+          // goal round); without a goal, on the ordinary turn end.
+          done: hasGoal ? goalDone : (!s.running || !!s.completed),
+          // 'action' still rings whenever the user must choose/approve.
           pending: !!s.pendingInteraction,
         }
       }

@@ -83,18 +83,26 @@ exports.apply = function apply(ctx) {
       for (const id in byId) {
         const s = byId[id]
         if (!s) continue
-        // Projection value carries the goal snapshot (goal.goal.phase) when the
-        // session is under a goal; null/absent when none.
-        const goalPhase = s.projectionValues && s.projectionValues.goal
-          ? s.projectionValues.goal.goal && s.projectionValues.goal.goal.phase
-          : undefined
-        const hasGoal = goalPhase !== undefined
-        const goalDone = goalPhase === 'complete'
+        // Goal projection (when under a goal): { goal:{ phase }, roundsStarted, ... }
+        // or null/absent when none. Read the phase and the round budget to know
+        // whether more autonomous rounds are still expected.
+        const gp = (s.projectionValues && s.projectionValues.goal) || null
+        const hasGoal = !!gp
+        const phase = gp ? (gp.goal && gp.goal.phase) : undefined
+        const roundsStarted = gp ? gp.roundsStarted : 0
+        const maxRounds = gp && gp.goal ? gp.goal.maxGoalRounds : 0
+
+        // 'done' rings only on a MEANINGFUL completion, not on each intermediate
+        // round of an auto-continuing goal:
+        //  - no goal                          -> ordinary turn end
+        //  - goal complete/blocked/paused     -> work stopped, ring
+        //  - goal active + budget exhausted   -> work done, ring
+        //  - goal active with continuation    -> suppress (more rounds coming)
+        const goalStopped = hasGoal && (phase === 'complete' || phase === 'blocked' || phase === 'paused')
+        const goalExhausted = hasGoal && phase === 'active' && maxRounds > 0 && roundsStarted >= maxRounds
+
         cur[id] = {
-          // 'done' should ring only on a MEANINGFUL completion: under a goal,
-          // only when the goal actually completes (not on each intermediate
-          // goal round); without a goal, on the ordinary turn end.
-          done: hasGoal ? goalDone : (!s.running || !!s.completed),
+          done: hasGoal ? (goalStopped || goalExhausted) : (!s.running || !!s.completed),
           // 'action' still rings whenever the user must choose/approve.
           pending: !!s.pendingInteraction,
         }

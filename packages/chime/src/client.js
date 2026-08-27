@@ -92,17 +92,16 @@ exports.apply = function apply(ctx) {
         const roundsStarted = gp ? gp.roundsStarted : 0
         const maxRounds = gp && gp.goal ? gp.goal.maxGoalRounds : 0
 
-        // 'done' rings only on a MEANINGFUL completion, not on each intermediate
-        // round of an auto-continuing goal:
-        //  - no goal                          -> ordinary turn end
-        //  - goal complete/blocked/paused     -> work stopped, ring
-        //  - goal active + budget exhausted   -> work done, ring
-        //  - goal active with continuation    -> suppress (more rounds coming)
-        const goalStopped = hasGoal && (phase === 'complete' || phase === 'blocked' || phase === 'paused')
-        const goalExhausted = hasGoal && phase === 'active' && maxRounds > 0 && roundsStarted >= maxRounds
+        // Suppress the per-round 'done' chime ONLY while an active goal still
+        // has auto-continuation budget (it is mid-work). In every other state —
+        // no goal, goal complete/blocked/paused, or budget exhausted — fall back
+        // to the ordinary turn-end chime. A lingering completed goal must NOT
+        // silence later normal conversations in the same session.
+        const autoGoal = hasGoal && phase === 'active'
+          && !(maxRounds > 0 && roundsStarted >= maxRounds)
 
         cur[id] = {
-          done: hasGoal ? (goalStopped || goalExhausted) : (!s.running || !!s.completed),
+          done: autoGoal ? false : (!s.running || !!s.completed),
           // 'action' still rings whenever the user must choose/approve.
           pending: !!s.pendingInteraction,
         }

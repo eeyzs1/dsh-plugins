@@ -246,7 +246,7 @@ function installResilientFetch() {
         throw error
       }
     } catch (error) {
-      console.error('[llm-transport-recovery] fetch wrapper error:', String(error))
+      console.error('[llm-transport-recovery] recovery failed, one more attempt via original fetch: ' + renderChainSafe(error))
       return originalFetch.apply(this, args)
     }
   }

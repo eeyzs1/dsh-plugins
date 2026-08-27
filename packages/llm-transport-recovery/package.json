@@ -1,0 +1,21 @@
+{
+  "name": "@eeyzs1/dsh-llm-transport-recovery",
+  "version": "1.4.0",
+  "description": "Auto-recover agent turns from connection-level LLM failures (TRANSPORT/TIMEOUT) after the built-in retry budget is exhausted: unbounded capped backoff until success or cancel — no DSH restart needed. Logs full error chains for diagnosis.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/index.js",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}

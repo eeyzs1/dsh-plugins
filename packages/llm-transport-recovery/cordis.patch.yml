@@ -1,0 +1,4 @@
+# 本 bundle 的组合补丁：插入一行 host 插件，使本包成为 loader 条目并开机自动加载。
+- insert:
+    - id: llm-transport-recovery
+      name: '@eeyzs1/dsh-llm-transport-recovery'

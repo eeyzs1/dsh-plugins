@@ -86,12 +86,46 @@ function resolveFresh(hostname) {
   })
 }
 
-/**
- * Recovery path — used ONLY after a transport failure (and for a short cooldown
- * after it): tries the last known-good IP first, otherwise re-resolves DNS fresh
- * and tries every IP with a brand-new TLS connection until one works.
- */
-function recoveryFetch(input, init) {
+/** Build one HTTPS request and resolve with a WHATWG Response (SSE body streams through). */
+function requestOnce({ u, method, headers, body, signal, agent, ip }) {
+  return new Promise((resolve, reject) => {
+    const opts = {
+      host: ip || u.hostname,
+      port: u.port || 443,
+      path: u.pathname + u.search,
+      method,
+      headers: Object.fromEntries(headers.entries()),
+      servername: u.hostname, // SNI must carry the real hostname for TLS
+      signal,
+    }
+    if (ip !== undefined) opts.agent = false // recovery: brand-new connection to a specific IP
+    else opts.agent = agent // fast path: shared HTTP/1.1 keep-alive agent
+    const req = https.request(opts, (res) => {
+      // Response headers arrived — keep this connection for streaming.
+      clearTimeout(idle)
+      const resHeaders = new Headers()
+      for (const [k, v] of Object.entries(res.headers)) {
+        if (Array.isArray(v)) { for (const item of v) resHeaders.append(k, item) }
+        else if (v !== undefined) resHeaders.set(k, String(v))
+      }
+      resolve(new Response(Readable.toWeb(res), {
+        status: res.statusCode ?? 200,
+        statusText: res.statusMessage ?? '',
+        headers: resHeaders,
+      }))
+    })
+    // Bound the connect+TLS+headers phase so a dead/slow endpoint does not hang;
+    // once 'response' fires, the stream owns its lifetime (watchdog handles idle).
+    const idle = setTimeout(() => {
+      req.destroy(new Error('connect timeout to ' + (ip || u.hostname)))
+    }, 6000)
+    req.on('error', (error) => { clearTimeout(idle); reject(error) })
+    if (typeof body === 'string') req.write(body)
+    req.end()
+  })
+}
+
+function prepareRequest(input, init) {
   const u = new URL(typeof input === 'string' ? input : input.url)
   const method = (init?.method || 'GET').toUpperCase()
   const headers = new Headers(init?.headers || {})
@@ -99,56 +133,41 @@ function recoveryFetch(input, init) {
   if (typeof body === 'string' && !headers.has('content-length')) {
     headers.set('content-length', String(Buffer.byteLength(body)))
   }
-  headers.set('connection', 'close')
   if (!headers.has('host')) headers.set('host', u.hostname)
   const signal = init?.signal
-  const port = u.port || 443
-  const path = u.pathname + u.search
+  return { u, method, headers, body, signal }
+}
 
-  function attempt(ip) {
-    return new Promise((resolve, reject) => {
-      const req = https.request({
-        host: ip, // connect directly to this resolved IP
-        port,
-        path,
-        method,
-        headers: Object.fromEntries(headers.entries()),
-        servername: u.hostname, // SNI must carry the real hostname for TLS
-        agent: false, // fresh connection per request — no pool, no stale sockets
-        signal,
-      }, (res) => {
-        // Response headers arrived: this IP works — keep this connection for streaming.
-        clearTimeout(idle)
-        const resHeaders = new Headers()
-        for (const [k, v] of Object.entries(res.headers)) {
-          if (Array.isArray(v)) { for (const item of v) resHeaders.append(k, item) }
-          else if (v !== undefined) resHeaders.set(k, String(v))
-        }
-        resolve(new Response(Readable.toWeb(res), {
-          status: res.statusCode ?? 200,
-          statusText: res.statusMessage ?? '',
-          headers: resHeaders,
-        }))
-      })
-      // Bound the connect+TLS+headers phase per IP so a dead/slow IP does not
-      // block the fallback; once 'response' fires the stream owns its lifetime.
-      const idle = setTimeout(() => {
-        req.destroy(new Error('connect timeout to ' + ip))
-      }, 6000)
-      req.on('error', (error) => { clearTimeout(idle); reject(error) })
-      if (typeof body === 'string') req.write(body)
-      req.end()
-    })
-  }
+/**
+ * Fast path: HTTP/1.1 over a shared keep-alive agent.
+ *
+ * WHY: api.deepseek.com negotiates HTTP/2 via ALPN, and the user's network path
+ * intermittently corrupts h2 TLS records (the observed `ssl/tls alert bad record
+ * mac` + ERR_HTTP2_PROTOCOL_ERROR on other h2 sites), while HTTP/1.1 is stable.
+ * Node's https module is HTTP/1.1-only, so this path avoids h2 entirely and
+ * keeps connection reuse via the keep-alive agent.
+ */
+function fastDeepseekFetch(input, init, agent) {
+  const p = prepareRequest(input, init)
+  return requestOnce({ ...p, agent })
+}
 
+/**
+ * Recovery path — used after a transport failure (and for a short cooldown):
+ * tries the last known-good IP first, otherwise re-resolves DNS fresh and tries
+ * every resolved IP with a brand-new TLS connection until one works.
+ */
+function recoveryFetch(input, init) {
+  const p = prepareRequest(input, init)
+  p.headers.set('connection', 'close')
+  const { u, method, headers, body, signal } = p
   return (async () => {
     const tried = new Set()
     // 1) Last known-good IP first: usually the fastest correct choice.
     if (fetchState.workingIp) {
       tried.add(fetchState.workingIp)
       try {
-        const ok = await attempt(fetchState.workingIp)
-        return ok
+        return await requestOnce({ u, method, headers, body, signal, ip: fetchState.workingIp })
       } catch (error) {
         if (signal?.aborted) throw error
         console.error('[llm-transport-recovery] known-good IP ' + fetchState.workingIp +
@@ -169,7 +188,7 @@ function recoveryFetch(input, init) {
         throw err
       }
       try {
-        const ok = await attempt(ip)
+        const ok = await requestOnce({ u, method, headers, body, signal, ip })
         fetchState.workingIp = ip
         return ok
       } catch (error) {
@@ -187,17 +206,14 @@ function recoveryFetch(input, init) {
 /**
  * Install the resilient fetch wrapper ONCE.
  *
- * Fast path (zero overhead): deepseek requests go through the ORIGINAL undici
- * fetch — keep-alive, cached resolution — exactly the normal behavior.
- *
- * On a network-level failure (fetch rejects = TRANSPORT-class), the wrapper
- * switches to recovery mode: re-resolves DNS fresh, tries the last known-good
- * IP first then every resolved IP with a brand-new TLS connection, and returns
- * the recovered response. Recovery mode lasts RECOVERY_COOLDOWN_MS, then the
- * fast path resumes. If recovery also fails, the original error propagates and
- * the agent/request-error safety-net backoff takes over.
+ * Fast path: HTTP/1.1 keep-alive agent (no HTTP/2 — the observed bad-MAC cause).
+ * On a network-level failure the wrapper switches to recovery mode: fresh DNS,
+ * last known-good IP first, then every resolved IP with a brand-new connection.
+ * Recovery mode lasts RECOVERY_COOLDOWN_MS, then the fast path resumes. If
+ * recovery also fails, the error propagates and the agent/request-error
+ * safety-net backoff takes over.
  */
-function installResilientFetch() {
+function installResilientFetch(agent) {
   const originalFetch = globalThis.fetch
   if (typeof originalFetch !== 'function' || globalThis[WRAP_SYMBOL] === true) return
   globalThis[WRAP_SYMBOL] = true
@@ -216,8 +232,7 @@ function installResilientFetch() {
         try { host = new URL(input.url).host } catch { /* keep empty */ }
       }
       const isDeepseek = DEEPSEEK_HOSTS.has(host) || host.endsWith('.deepseek.com')
-      // FormData/stream bodies (Files upload) stay on the original fetch — the
-      // recovery path only handles plain-string bodies (chat completions etc.).
+      // FormData/stream bodies (Files upload) stay on the original fetch.
       const body = init?.body
       const plainBody = body === undefined || body === null || typeof body === 'string'
       if (!isDeepseek || !plainBody) return originalFetch.apply(this, args)
@@ -227,11 +242,8 @@ function installResilientFetch() {
       }
       if (fetchState.mode === 'normal') {
         try {
-          return await originalFetch.apply(this, args)
+          return await fastDeepseekFetch(input, init, agent)
         } catch (error) {
-          // Network-level failure (fetch only rejects on transport errors):
-          // engage recovery immediately — one bad IP should cost one attempt,
-          // not 122 like undici's cached resolution did.
           fetchState.mode = 'recovering'
           fetchState.recoveryUntil = Date.now() + RECOVERY_COOLDOWN_MS
           console.error('[llm-transport-recovery] transport failure → recovery mode: ' + renderChainSafe(error))
@@ -246,14 +258,17 @@ function installResilientFetch() {
         throw error
       }
     } catch (error) {
-      console.error('[llm-transport-recovery] recovery failed, one more attempt via original fetch: ' + renderChainSafe(error))
-      return originalFetch.apply(this, args)
+      console.error('[llm-transport-recovery] recovery failed, one more attempt via HTTP/1.1: ' + renderChainSafe(error))
+      return fastDeepseekFetch(input, init, agent)
     }
   }
 }
 
 export function apply(ctx) {
-  installResilientFetch()
+  // HTTP/1.1 keep-alive agent for the fast path (avoids HTTP/2 — the observed
+  // bad-record-MAC cause on this network path).
+  const h1Agent = new https.Agent({ keepAlive: true, maxSockets: 16, maxFreeSockets: 8, keepAliveMsecs: 10000 })
+  installResilientFetch(h1Agent)
 
   const chains = new Map()
   let seq = 0

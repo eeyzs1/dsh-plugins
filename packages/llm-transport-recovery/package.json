@@ -1,6 +1,6 @@
 {
   "name": "@eeyzs1/dsh-llm-transport-recovery",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Auto-recover agent turns from connection-level LLM failures (TRANSPORT/TIMEOUT) after the built-in retry budget is exhausted: unbounded capped backoff until success or cancel — no DSH restart needed. Logs full error chains for diagnosis.",
   "type": "module",
   "main": "src/index.js",

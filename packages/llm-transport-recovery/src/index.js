@@ -56,19 +56,24 @@ function renderChainSafe(value) {
   return parts.join(' : ')
 }
 
-// Retry budget: 5 retries, then the turn fails (matching the stock DSH behavior).
-const MAX_ATTEMPTS = 5
+// Two-phase budget: 5 normal (fast-path) failures, then switch to the recovery
+// path (fresh DNS + all-IP fallback + brand-new connections). Recovery also has
+// a finite budget so a whole-network window cannot produce 200 retries; after
+// the combined budget the turn fails like stock DSH.
+const FAST_ATTEMPTS = 5
+const RECOVERY_ATTEMPTS = 15
+const TOTAL_LIMIT = FAST_ATTEMPTS + RECOVERY_ATTEMPTS
 const MAX_AGE_MS = 4 * 60 * 60 * 1000 // 4 hours per burst
 const INITIAL_DELAY_MS = 500
 const MAX_DELAY_MS = 15000
 const JITTER = 0.2
-const POLICY_KEY = JSON.stringify(['llm-transport-recovery', MAX_ATTEMPTS, INITIAL_DELAY_MS, MAX_DELAY_MS, JITTER])
-
-// After a transport failure we stay in "recovery mode" (fresh DNS + fresh
-// connection + IP fallback) for this long, then return to the zero-overhead
-// fast path (undici keep-alive). Bounds both flapping and overhead.
-const RECOVERY_COOLDOWN_MS = 5 * 60 * 1000
-const fetchState = { mode: 'normal', recoveryUntil: 0, workingIp: null }
+const POLICY_KEY = JSON.stringify(['llm-transport-recovery', FAST_ATTEMPTS, RECOVERY_ATTEMPTS, INITIAL_DELAY_MS, MAX_DELAY_MS, JITTER])
+const fetchState = { phase: 'fast', fastFailures: 0, recoveryFailures: 0, workingIp: null }
+function resetFetchState() {
+  fetchState.phase = 'fast'
+  fetchState.fastFailures = 0
+  fetchState.recoveryFailures = 0
+}
 
 /** Fresh DNS resolution (bypasses the process/OS cached entry that "restart" clears). */
 function resolveFresh(hostname) {
@@ -200,11 +205,11 @@ function recoveryFetch(input, init) {
  * Install the resilient fetch wrapper ONCE.
  *
  * Fast path: HTTP/1.1 keep-alive agent (no HTTP/2 — the observed bad-MAC cause).
- * On a network-level failure the wrapper switches to recovery mode: fresh DNS,
- * last known-good IP first, then every resolved IP with a brand-new connection.
- * Recovery mode lasts RECOVERY_COOLDOWN_MS, then the fast path resumes. If
- * recovery also fails, the error propagates and the agent/request-error
- * safety-net backoff takes over.
+ * On a network-level failure the wrapper counts it; after FAST_ATTEMPTS (5)
+ * fast-path failures it switches to the recovery path: fresh DNS, last known-good
+ * IP first, then every resolved IP with a brand-new connection. The recovery
+ * path stays active until a request succeeds (phase resets to fast) or the
+ * agent/request-error safety-net budget (TOTAL_LIMIT) is exhausted.
  */
 function installResilientFetch(agent) {
   const originalFetch = globalThis.fetch
@@ -230,29 +235,39 @@ function installResilientFetch(agent) {
       const plainBody = body === undefined || body === null || typeof body === 'string'
       if (!isDeepseek || !plainBody) return originalFetch.apply(this, args)
 
-      if (fetchState.mode === 'recovering' && Date.now() > fetchState.recoveryUntil) {
-        fetchState.mode = 'normal'
-      }
-      if (fetchState.mode === 'normal') {
+      if (fetchState.phase === 'fast') {
         try {
-          return await fastDeepseekFetch(input, init, agent)
+          const ok = await fastDeepseekFetch(input, init, agent)
+          resetFetchState()
+          return ok
         } catch (error) {
-          fetchState.mode = 'recovering'
-          fetchState.recoveryUntil = Date.now() + RECOVERY_COOLDOWN_MS
-          console.error('[llm-transport-recovery] transport failure → recovery mode: ' + renderChainSafe(error))
-          return recoveryFetch(input, init)
+          fetchState.fastFailures += 1
+          if (fetchState.fastFailures >= FAST_ATTEMPTS) {
+            fetchState.phase = 'recovery'
+            fetchState.recoveryFailures = 0
+            console.error('[llm-transport-recovery] ' + fetchState.fastFailures +
+              ' fast-path failures → recovery mode: ' + renderChainSafe(error))
+          } else {
+            console.error('[llm-transport-recovery] fast-path failure ' + fetchState.fastFailures +
+              '/' + FAST_ATTEMPTS + ': ' + renderChainSafe(error))
+          }
+          throw error
         }
       }
-      // Recovery mode: fresh DNS + IP fallback + fresh connection.
+      // Recovery phase: fresh DNS + IP fallback + brand-new connection.
       try {
-        return await recoveryFetch(input, init)
+        const ok = await recoveryFetch(input, init)
+        resetFetchState()
+        return ok
       } catch (error) {
-        if (Date.now() > fetchState.recoveryUntil) fetchState.mode = 'normal'
+        fetchState.recoveryFailures += 1
+        console.error('[llm-transport-recovery] recovery failure ' + fetchState.recoveryFailures +
+          '/' + RECOVERY_ATTEMPTS + ': ' + renderChainSafe(error))
         throw error
       }
     } catch (error) {
-      console.error('[llm-transport-recovery] recovery failed, one more attempt via HTTP/1.1: ' + renderChainSafe(error))
-      return fastDeepseekFetch(input, init, agent)
+      // URL/host parsing or unexpected wrapper errors: propagate as-is.
+      throw error
     }
   }
 }
@@ -326,12 +341,13 @@ export function apply(ctx) {
       }
       chain.count += 1
       const ageMs = Date.now() - chain.since
-      if (chain.count > MAX_ATTEMPTS || ageMs > MAX_AGE_MS) {
+      if (chain.count > TOTAL_LIMIT || ageMs > MAX_AGE_MS) {
         console.error('[llm-transport-recovery] giving up on ' + provider + ' ' + code +
           ' after ' + chain.count + ' attempts (' + Math.round(ageMs / 60000) + ' min)')
         chains.delete(key)
-        // Budget exhausted: fail the turn (do not delegate — the built-in policy
-        // would add 5 more retries, making the total 10 instead of 5).
+        // Budget exhausted (5 fast + 15 recovery): fail the turn and reset the
+        // wrapper phase so the next step starts fresh on the fast path.
+        resetFetchState()
         return undefined
       }
       if (chains.size > 512) {
@@ -343,13 +359,13 @@ export function apply(ctx) {
       const delay = Math.min(base * (1 - JITTER + 2 * JITTER * Math.random()), MAX_DELAY_MS)
 
       // Durable, GUI-visible record (normal-style chain under our own policy key,
-      // so the UI shows the finite 5-retry budget instead of an unbounded row).
+      // so the UI shows the finite TOTAL_LIMIT budget instead of an unbounded row).
       try {
         agent.session.append('llm/retry', {
           retryId: chain.retryId,
           turn, step, provider,
           mode: 'normal',
-          maxRetries: MAX_ATTEMPTS,
+          maxRetries: TOTAL_LIMIT,
           policyKey: POLICY_KEY,
           retry: chain.count,
           delayMs: delay,

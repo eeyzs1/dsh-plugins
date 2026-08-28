@@ -1,7 +1,7 @@
 {
   "name": "@eeyzs1/dsh-llm-transport-recovery",
-  "version": "1.6.0",
-  "description": "Auto-recover agent turns from connection-level LLM failures (TRANSPORT/TIMEOUT) after the built-in retry budget is exhausted: unbounded capped backoff until success or cancel — no DSH restart needed. Logs full error chains for diagnosis.",
+  "version": "1.7.0",
+  "description": "Two-phase recovery for DeepSeek TRANSPORT failures: 5 normal HTTP/1.1 retries, then a recovery path (fresh DNS + all-IP fallback + brand-new connections) up to a bounded budget (5+15=20 total), then the turn fails like stock DSH. Logs full error chains for diagnosis.",
   "type": "module",
   "main": "src/index.js",
   "exports": {

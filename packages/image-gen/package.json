@@ -1,0 +1,21 @@
+{
+  "name": "@eeyzs1/dsh-image-gen",
+  "version": "1.0.0",
+  "description": "Image generation capability plugin for DSH: generate_image (text-to-image via Zhipu CogView). The agent decides when to call it. Vision-understanding (reading images) is NOT included — that is the main model's native capability.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/index.js",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}

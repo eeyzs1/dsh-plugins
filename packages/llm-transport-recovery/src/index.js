@@ -87,7 +87,7 @@ function resolveFresh(hostname) {
 }
 
 /** Build one HTTPS request and resolve with a WHATWG Response (SSE body streams through). */
-function requestOnce({ u, method, headers, body, signal, agent, ip }) {
+function requestOnce({ u, method, headers, body, signal, agent, ip, timeoutMs }) {
   return new Promise((resolve, reject) => {
     const opts = {
       host: ip || u.hostname,
@@ -116,9 +116,10 @@ function requestOnce({ u, method, headers, body, signal, agent, ip }) {
     })
     // Bound the connect+TLS+headers phase so a dead/slow endpoint does not hang;
     // once 'response' fires, the stream owns its lifetime (watchdog handles idle).
+    const connectBudget = timeoutMs ?? 6000
     const idle = setTimeout(() => {
       req.destroy(new Error('connect timeout to ' + (ip || u.hostname)))
-    }, 6000)
+    }, connectBudget)
     req.on('error', (error) => { clearTimeout(idle); reject(error) })
     if (typeof body === 'string') req.write(body)
     req.end()
@@ -162,44 +163,35 @@ function recoveryFetch(input, init) {
   p.headers.set('connection', 'close')
   const { u, method, headers, body, signal } = p
   return (async () => {
-    const tried = new Set()
-    // 1) Last known-good IP first: usually the fastest correct choice.
-    if (fetchState.workingIp) {
-      tried.add(fetchState.workingIp)
-      try {
-        return await requestOnce({ u, method, headers, body, signal, ip: fetchState.workingIp })
-      } catch (error) {
-        if (signal?.aborted) throw error
-        console.error('[llm-transport-recovery] known-good IP ' + fetchState.workingIp +
-          ' failed: ' + renderChainSafe(error))
-      }
-    }
-    // 2) Fresh DNS (bypasses caches, like a restart would) + every IP until one works.
-    const ips = await resolveFresh(u.hostname)
-    if (ips.length === 0) {
+    // Candidate IPs: last known-good + a fresh DNS resolution (bypasses caches).
+    const candidates = new Set()
+    if (fetchState.workingIp) candidates.add(fetchState.workingIp)
+    const fresh = await resolveFresh(u.hostname)
+    for (const ip of fresh) candidates.add(ip)
+    if (candidates.size === 0) {
       throw new Error('DNS resolution failed for ' + u.hostname)
     }
-    let lastError = null
-    for (const ip of ips) {
-      if (tried.has(ip)) continue
+    const ips = [...candidates]
+    // Parallel race across ALL candidate IPs (each with a short connect budget):
+    // during a whole-CDN blackhole this fails in ~4s instead of N×6s sequentially.
+    const attempts = ips.map(ip =>
+      requestOnce({ u, method, headers, body, signal, ip, timeoutMs: 4000 })
+        .then(response => ({ _ip: ip, response })))
+    try {
+      const winner = await Promise.any(attempts)
+      fetchState.workingIp = winner._ip
+      return winner.response
+    } catch (aggregate) {
       if (signal?.aborted) {
         const err = new Error('request aborted')
         err.name = 'AbortError'
         throw err
       }
-      try {
-        const ok = await requestOnce({ u, method, headers, body, signal, ip })
-        fetchState.workingIp = ip
-        return ok
-      } catch (error) {
-        lastError = error
-        if (signal?.aborted) throw error
-        console.error('[llm-transport-recovery] IP ' + ip + ' failed: ' + renderChainSafe(error))
-      }
+      const first = aggregate.errors?.[0] ?? aggregate
+      console.error('[llm-transport-recovery] all IPs failed for ' + u.hostname +
+        ' | IPs=' + ips.join(',') + ' | ' + renderChainSafe(first))
+      throw first
     }
-    console.error('[llm-transport-recovery] all IPs failed for ' + u.hostname +
-      ' | IPs=' + ips.join(',') + ' | ' + renderChainSafe(lastError))
-    throw lastError
   })()
 }
 

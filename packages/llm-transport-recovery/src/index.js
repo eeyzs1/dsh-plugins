@@ -56,12 +56,13 @@ function renderChainSafe(value) {
   return parts.join(' : ')
 }
 
-const MAX_ATTEMPTS = 200
+// Retry budget: 5 retries, then the turn fails (matching the stock DSH behavior).
+const MAX_ATTEMPTS = 5
 const MAX_AGE_MS = 4 * 60 * 60 * 1000 // 4 hours per burst
 const INITIAL_DELAY_MS = 500
 const MAX_DELAY_MS = 15000
 const JITTER = 0.2
-const POLICY_KEY = JSON.stringify(['llm-transport-recovery', INITIAL_DELAY_MS, MAX_DELAY_MS, JITTER])
+const POLICY_KEY = JSON.stringify(['llm-transport-recovery', MAX_ATTEMPTS, INITIAL_DELAY_MS, MAX_DELAY_MS, JITTER])
 
 // After a transport failure we stay in "recovery mode" (fresh DNS + fresh
 // connection + IP fallback) for this long, then return to the zero-overhead
@@ -329,7 +330,9 @@ export function apply(ctx) {
         console.error('[llm-transport-recovery] giving up on ' + provider + ' ' + code +
           ' after ' + chain.count + ' attempts (' + Math.round(ageMs / 60000) + ' min)')
         chains.delete(key)
-        return next()
+        // Budget exhausted: fail the turn (do not delegate — the built-in policy
+        // would add 5 more retries, making the total 10 instead of 5).
+        return undefined
       }
       if (chains.size > 512) {
         for (const [k, v] of chains) if (Date.now() - v.since > MAX_AGE_MS) chains.delete(k)
@@ -339,12 +342,14 @@ export function apply(ctx) {
       const base = Math.min(INITIAL_DELAY_MS * Math.pow(2, exponent), MAX_DELAY_MS)
       const delay = Math.min(base * (1 - JITTER + 2 * JITTER * Math.random()), MAX_DELAY_MS)
 
-      // Durable, GUI-visible record (always-style chain under our own policy key).
+      // Durable, GUI-visible record (normal-style chain under our own policy key,
+      // so the UI shows the finite 5-retry budget instead of an unbounded row).
       try {
         agent.session.append('llm/retry', {
           retryId: chain.retryId,
           turn, step, provider,
-          mode: 'always',
+          mode: 'normal',
+          maxRetries: MAX_ATTEMPTS,
           policyKey: POLICY_KEY,
           retry: chain.count,
           delayMs: delay,

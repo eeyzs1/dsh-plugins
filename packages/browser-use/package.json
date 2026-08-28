@@ -1,0 +1,21 @@
+{
+  "name": "@eeyzs1/dsh-browser-use",
+  "version": "1.0.0",
+  "description": "Browser-use MCP integration for DSH: mounts the browser-use MCP server (headless by default) and provides browser_set_mode / browser_get_mode tools to switch headless/headed at runtime, plus a system-prompt hint to switch to headed on login pages.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/index.js",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}

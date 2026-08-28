@@ -1,0 +1,6 @@
+# 本 bundle 的组合补丁：插入 browser-mode 插件行。
+# browser-use 的 MCP 服务器由该插件在运行时自行挂载（self-contained），
+# 这样它可以持有生命周期、在无头/有头之间切换（重新挂载换 env）。
+- insert:
+    - id: browser-use
+      name: '@eeyzs1/dsh-browser-use'

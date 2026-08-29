@@ -139,9 +139,10 @@ function requestOnce({ u, method, headers, body, signal, agent, ip, timeoutMs })
     }
     if (ip !== undefined) opts.agent = false // recovery: brand-new connection to a specific IP
     else opts.agent = agent // fast path: shared HTTP/1.1 keep-alive agent
+    let connectTimer = null
     const req = https.request(opts, (res) => {
       // Response headers arrived — keep this connection for streaming.
-      clearTimeout(idle)
+      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null }
       const resHeaders = new Headers()
       for (const [k, v] of Object.entries(res.headers)) {
         if (Array.isArray(v)) { for (const item of v) resHeaders.append(k, item) }
@@ -153,13 +154,31 @@ function requestOnce({ u, method, headers, body, signal, agent, ip, timeoutMs })
         headers: resHeaders,
       }))
     })
-    // Bound the connect+TLS+headers phase so a dead/slow endpoint does not hang;
-    // once 'response' fires, the stream owns its lifetime (watchdog handles idle).
+    // Bound ONLY the TCP/TLS connect phase so a dead IP fails fast. Once the
+    // socket is up, the response wait is bounded by the caller's abort signal /
+    // adapter idle watchdog — a slow server (huge context + reasoning) must NOT
+    // be killed by this timer.
     const connectBudget = timeoutMs ?? 6000
-    const idle = setTimeout(() => {
+    connectTimer = setTimeout(() => {
+      connectTimer = null
       req.destroy(new Error('connect timeout to ' + (ip || u.hostname)))
     }, connectBudget)
-    req.on('error', (error) => { clearTimeout(idle); reject(error) })
+    req.on('socket', (socket) => {
+      const clearConnectTimer = () => {
+        if (connectTimer) { clearTimeout(connectTimer); connectTimer = null }
+      }
+      if (socket.connecting === false) {
+        // Reused keep-alive socket: already connected.
+        clearConnectTimer()
+      } else {
+        // Fresh TLS connection: clear once the handshake completes.
+        socket.once('secureConnect', clearConnectTimer)
+      }
+    })
+    req.on('error', (error) => {
+      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null }
+      reject(error)
+    })
     if (typeof body === 'string') req.write(body)
     req.end()
   })

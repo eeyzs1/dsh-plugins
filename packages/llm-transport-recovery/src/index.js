@@ -433,25 +433,56 @@ export function apply(ctx) {
     }
   }, { prepend: true }))
 
-  // 2) Diagnosis: capture the full error chain of every failed stream (the LlmFailure
-  //    surface strips `cause`, so this wrapper is the only place that sees it live).
+  // 2) llm/stream wrapper: diagnostics + compaction auto-retry. Compaction is a
+  //    single direct LLM call with no agent-level retry, so a clean TRANSPORT
+  //    failure (before any chunk is emitted) is retried here with bounded
+  //    backoff; mid-stream failures are never retried (no duplicated output).
   disposers.push(ctx.on('llm/stream', (options, next) => {
-    let inner
-    try {
-      inner = next()
-    } catch (error) {
-      console.error('[llm-transport-recovery] llm/stream next failed:', renderChain(error))
-      throw error
-    }
-    return (async function* () {
+    const isCompaction = options?.purpose === 'compaction'
+    const makeStream = () => {
+      let inner
       try {
-        for await (const chunk of inner) yield chunk
+        inner = next()
       } catch (error) {
-        const msg = renderChain(error)
-        if (/(failed|TRANSPORT|TIMEOUT|ECONNRESET|ETIMEDOUT|fetch|terminated|socket)/i.test(msg)) {
-          console.error('[llm-transport-recovery] stream error cause: ' + msg)
-        }
+        console.error('[llm-transport-recovery] llm/stream next failed:', renderChain(error))
         throw error
+      }
+      return (async function* () {
+        try {
+          for await (const chunk of inner) yield chunk
+        } catch (error) {
+          const msg = renderChain(error)
+          if (/(failed|TRANSPORT|TIMEOUT|ECONNRESET|ETIMEDOUT|fetch|terminated|socket)/i.test(msg)) {
+            console.error('[llm-transport-recovery] stream error cause: ' + msg)
+          }
+          throw error
+        }
+      })()
+    }
+    if (!isCompaction) return makeStream()
+    return (async function* () {
+      let attempts = 0
+      while (true) {
+        attempts += 1
+        let yielded = false
+        try {
+          for await (const chunk of makeStream()) {
+            yielded = true
+            yield chunk
+          }
+          return
+        } catch (error) {
+          const msg = renderChain(error)
+          const transportLike = /(failed|TRANSPORT|ECONNRESET|ETIMEDOUT|fetch|terminated|socket)/i.test(msg)
+          if (!transportLike || yielded || attempts >= 6) throw error
+          console.error('[llm-transport-recovery] compaction attempt ' + attempts + ' failed, retrying: ' + msg)
+          const delay = Math.min(1000 * Math.pow(2, attempts - 1), 15000)
+          try {
+            await ctx.timeout(delay)
+          } catch {
+            throw error // fiber disposed during backoff
+          }
+        }
       }
     })()
   }))

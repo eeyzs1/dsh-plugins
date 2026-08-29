@@ -1,7 +1,7 @@
 {
   "name": "@eeyzs1/dsh-llm-transport-recovery",
-  "version": "1.7.1",
-  "description": "Two-phase recovery for DeepSeek TRANSPORT failures: 5 normal HTTP/1.1 retries within a 2-min window, then a recovery path (fresh DNS + all-IP fallback + brand-new connections) up to a bounded budget (5+15=20 total), then the turn fails like stock DSH. Phase is tracked per session so one session's success cannot reset another's counter. Logs full error chains for diagnosis.",
+  "version": "1.8.0",
+  "description": "Two-phase recovery for DeepSeek TRANSPORT failures: 5 normal HTTP/1.1 retries within a 2-min window, then a recovery path (fresh DNS + all-IP fallback + brand-new connections) up to a bounded budget (5+15=20 total), then the turn fails like stock DSH. Phase is tracked per session; compaction calls get bounded auto-retry on clean transport failures. Logs full error chains for diagnosis.",
   "type": "module",
   "main": "src/index.js",
   "exports": {

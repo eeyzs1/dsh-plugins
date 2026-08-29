@@ -56,23 +56,56 @@ function renderChainSafe(value) {
   return parts.join(' : ')
 }
 
-// Two-phase budget: 5 normal (fast-path) failures, then switch to the recovery
-// path (fresh DNS + all-IP fallback + brand-new connections). Recovery also has
-// a finite budget so a whole-network window cannot produce 200 retries; after
-// the combined budget the turn fails like stock DSH.
+// Two-phase budget: 5 normal (fast-path) failures within a short window, then
+// switch to the recovery path (fresh DNS + all-IP fallback + brand-new
+// connections). Recovery also has a finite budget so a whole-network window
+// cannot produce 200 retries; after the combined budget the turn fails like
+// stock DSH. The phase is tracked PER SESSION (keyed by the
+// x-deepseek-harness-session-id request header): one session's success or
+// give-up must not reset another session's failure counter.
 const FAST_ATTEMPTS = 5
 const RECOVERY_ATTEMPTS = 15
 const TOTAL_LIMIT = FAST_ATTEMPTS + RECOVERY_ATTEMPTS
+const FAILURE_WINDOW_MS = 120 * 1000 // count fast-path failures within this window
+const RECOVERY_COOLDOWN_MS = 5 * 60 * 1000 // stay on the recovery path this long after switching
 const MAX_AGE_MS = 4 * 60 * 60 * 1000 // 4 hours per burst
 const INITIAL_DELAY_MS = 500
 const MAX_DELAY_MS = 15000
 const JITTER = 0.2
 const POLICY_KEY = JSON.stringify(['llm-transport-recovery', FAST_ATTEMPTS, RECOVERY_ATTEMPTS, INITIAL_DELAY_MS, MAX_DELAY_MS, JITTER])
-const fetchState = { phase: 'fast', fastFailures: 0, recoveryFailures: 0, workingIp: null }
-function resetFetchState() {
-  fetchState.phase = 'fast'
-  fetchState.fastFailures = 0
-  fetchState.recoveryFailures = 0
+
+/** Per-session wrapper state (phase, failure window, known-good IP). */
+const sessionStates = new Map() // sessionKey -> state
+
+function sessionKeyOf(init) {
+  try {
+    const h = init?.headers
+    if (h instanceof Headers) {
+      const v = h.get('x-deepseek-harness-session-id')
+      if (v) return String(v)
+    } else if (h && typeof h === 'object') {
+      const v = h['x-deepseek-harness-session-id']
+      if (v) return String(v)
+    }
+  } catch { /* keep global key */ }
+  return '__global__'
+}
+
+function sessionState(key) {
+  let st = sessionStates.get(key)
+  if (st === undefined) {
+    st = { phase: 'fast', failures: [], recoveryUntil: 0, workingIp: null, lastSeen: Date.now() }
+    sessionStates.set(key, st)
+  }
+  st.lastSeen = Date.now()
+  // Bound the map size by dropping long-idle sessions.
+  if (sessionStates.size > 64) {
+    const now = Date.now()
+    for (const [k, v] of sessionStates) {
+      if (now - v.lastSeen > 30 * 60 * 1000) sessionStates.delete(k)
+    }
+  }
+  return st
 }
 
 /** Fresh DNS resolution (bypasses the process/OS cached entry that "restart" clears). */
@@ -164,14 +197,14 @@ function fastDeepseekFetch(input, init, agent) {
  * tries the last known-good IP first, otherwise re-resolves DNS fresh and tries
  * every resolved IP with a brand-new TLS connection until one works.
  */
-function recoveryFetch(input, init) {
+function recoveryFetch(input, init, st) {
   const p = prepareRequest(input, init)
   p.headers.set('connection', 'close')
   const { u, method, headers, body, signal } = p
   return (async () => {
     // Candidate IPs: last known-good + a fresh DNS resolution (bypasses caches).
     const candidates = new Set()
-    if (fetchState.workingIp) candidates.add(fetchState.workingIp)
+    if (st?.workingIp) candidates.add(st.workingIp)
     const fresh = await resolveFresh(u.hostname)
     for (const ip of fresh) candidates.add(ip)
     if (candidates.size === 0) {
@@ -185,7 +218,7 @@ function recoveryFetch(input, init) {
         .then(response => ({ _ip: ip, response })))
     try {
       const winner = await Promise.any(attempts)
-      fetchState.workingIp = winner._ip
+      if (st) st.workingIp = winner._ip
       return winner.response
     } catch (aggregate) {
       if (signal?.aborted) {
@@ -235,20 +268,31 @@ function installResilientFetch(agent) {
       const plainBody = body === undefined || body === null || typeof body === 'string'
       if (!isDeepseek || !plainBody) return originalFetch.apply(this, args)
 
-      if (fetchState.phase === 'fast') {
+      const st = sessionState(sessionKeyOf(init))
+      const now = Date.now()
+      // Prune failures older than the window.
+      st.failures = st.failures.filter(t => now - t < FAILURE_WINDOW_MS)
+      // Recovery cooldown expired → back to the fast path.
+      if (st.phase === 'recovery' && now > st.recoveryUntil) {
+        st.phase = 'fast'
+        st.failures = []
+      }
+
+      if (st.phase === 'fast') {
         try {
           const ok = await fastDeepseekFetch(input, init, agent)
-          resetFetchState()
+          st.failures = []
           return ok
         } catch (error) {
-          fetchState.fastFailures += 1
-          if (fetchState.fastFailures >= FAST_ATTEMPTS) {
-            fetchState.phase = 'recovery'
-            fetchState.recoveryFailures = 0
-            console.error('[llm-transport-recovery] ' + fetchState.fastFailures +
+          st.failures.push(now)
+          if (st.failures.length >= FAST_ATTEMPTS) {
+            st.phase = 'recovery'
+            st.recoveryUntil = now + RECOVERY_COOLDOWN_MS
+            st.failures = []
+            console.error('[llm-transport-recovery] ' + FAST_ATTEMPTS +
               ' fast-path failures → recovery mode: ' + renderChainSafe(error))
           } else {
-            console.error('[llm-transport-recovery] fast-path failure ' + fetchState.fastFailures +
+            console.error('[llm-transport-recovery] fast-path failure ' + st.failures.length +
               '/' + FAST_ATTEMPTS + ': ' + renderChainSafe(error))
           }
           throw error
@@ -256,13 +300,9 @@ function installResilientFetch(agent) {
       }
       // Recovery phase: fresh DNS + IP fallback + brand-new connection.
       try {
-        const ok = await recoveryFetch(input, init)
-        resetFetchState()
-        return ok
+        return await recoveryFetch(input, init, st)
       } catch (error) {
-        fetchState.recoveryFailures += 1
-        console.error('[llm-transport-recovery] recovery failure ' + fetchState.recoveryFailures +
-          '/' + RECOVERY_ATTEMPTS + ': ' + renderChainSafe(error))
+        console.error('[llm-transport-recovery] recovery failure: ' + renderChainSafe(error))
         throw error
       }
     } catch (error) {
@@ -345,9 +385,9 @@ export function apply(ctx) {
         console.error('[llm-transport-recovery] giving up on ' + provider + ' ' + code +
           ' after ' + chain.count + ' attempts (' + Math.round(ageMs / 60000) + ' min)')
         chains.delete(key)
-        // Budget exhausted (5 fast + 15 recovery): fail the turn and reset the
-        // wrapper phase so the next step starts fresh on the fast path.
-        resetFetchState()
+        // Budget exhausted (5 fast + 15 recovery): fail the turn and drop this
+        // session's wrapper state so the next step starts fresh on the fast path.
+        sessionStates.delete(agent.id)
         return undefined
       }
       if (chains.size > 512) {

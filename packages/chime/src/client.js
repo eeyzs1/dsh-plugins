@@ -73,9 +73,8 @@ exports.apply = function apply(ctx) {
   const Notifier = (props) => {
     const useSessions = props.useSessions
     const list = useSessions((s) => s)
-    // New DSH (>=0.1.2-alpha): pending interactions live in a separate root
-    // observable instead of the session summary. Guarded so old versions keep
-    // working through s.pendingInteraction.
+    // Pending interactions now live in a separate root observable
+    // (useSessionPendingInteraction) instead of the session summary.
     const usePending = typeof props.useSessionPendingInteraction === 'function'
       ? props.useSessionPendingInteraction
       : null
@@ -109,11 +108,10 @@ exports.apply = function apply(ctx) {
 
         cur[id] = {
           done: autoGoal ? false : (!s.running || !!s.completed),
-          // Legacy pending signal (old DSH); new DSH provides the pending map.
-          pending: !!s.pendingInteraction,
+          pending: false,
         }
       }
-      // New-version pending source: any session with a pending interaction.
+      // Pending source: any session with a pending interaction.
       if (pendingMap && pendingMap.size > 0) {
         for (const sid of pendingMap.keys()) {
           const sidStr = String(sid)

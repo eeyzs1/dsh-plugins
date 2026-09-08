@@ -131,8 +131,16 @@ exports.apply = function apply(ctx) {
         const autoGoal = hasGoal && phase === 'active'
           && !(maxRounds > 0 && roundsStarted >= maxRounds)
 
+        // Subagent sessions (spawned by the main agent mid-task) never chime
+        // 'done': their lifecycle is internal work and the parent's turn-end
+        // chime is the user-facing signal. Pending-interaction chimes are
+        // deliberately NOT filtered — a blocked subagent still needs the
+        // user's attention. Same predicate as DSH's own workspace tree
+        // (origin !== 'subagent').
+        const isSubagent = s.origin === 'subagent'
+
         cur[id] = {
-          done: autoGoal ? false : (!s.running || !!s.completed),
+          done: autoGoal || isSubagent ? false : (!s.running || !!s.completed),
           pending: false,
         }
       }

@@ -20,7 +20,27 @@ exports.apply = function apply(ctx) {
     }
     return audioCtx
   }
+
+  // Safari unlock: unlike Chrome, WebKit only lets AudioContext.resume()
+  // succeed when called INSIDE a real user gesture. The context is created at
+  // mount (no gesture), so programmatic resume() from playChime is silently
+  // rejected and chimes stay mute. Hook the first pointerdown/keydown/touchend
+  // and resume there; detach once running.
+  const unlockEvents = ['pointerdown', 'keydown', 'touchend']
+  const detachUnlock = () => {
+    unlockEvents.forEach((e) => window.removeEventListener(e, onGesture, true))
+  }
+  const onGesture = () => {
+    if (audioCtx === null) return
+    if (audioCtx.state !== 'suspended') { detachUnlock(); return }
+    audioCtx.resume().then(() => {
+      if (audioCtx !== null && audioCtx.state === 'running') detachUnlock()
+    }, () => {})
+  }
+  unlockEvents.forEach((e) => window.addEventListener(e, onGesture, { capture: true, passive: true }))
+
   ctx.effect(() => () => {
+    detachUnlock()
     if (audioCtx !== null) {
       try { audioCtx.close() } catch {
         // AudioContext.close can throw after the document is already tearing down.
@@ -37,7 +57,10 @@ exports.apply = function apply(ctx) {
     const raw = Math.pow(Math.max(0, Math.min(1, volume)), 1.2) * 1.9
     const peak = Math.max(0.08, Math.min(1, raw))
     const ac = getAudioCtx()
-    if (ac === null) return
+    // Skip while still suspended (pre-gesture Safari / fresh-load autoplay
+    // block): notes scheduled on a frozen clock would all fire at once as a
+    // jarring burst the moment the context is unlocked.
+    if (ac === null || ac.state !== 'running') return
 
     // Each note = sine plus its octave (2x) for a brighter, harder-to-miss
     // timbre; 'action' repeats the pair to grab attention, 'done' plays a

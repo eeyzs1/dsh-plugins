@@ -56,11 +56,36 @@ dsh plugin --profile web add <包名或本地路径>
 
 ## 四、当前状态
 
+**全部插件均已安装为真实包并开机自启，无需任何手动加载。**
+
 | 插件 | 形态 | 开机自启 |
 |------|------|---------|
 | attach-files | **真实包** `packages/attach-files`（已装进 profile） | ✅ 是 |
 | chime | **真实包** `packages/chime`（已装进 profile） | ✅ 是 |
+| browser-use | **真实包** `packages/browser-use`（已装进 profile） | ✅ 是 |
+| image-gen | **真实包** `packages/image-gen`（已装进 profile） | ✅ 是 |
+| llm-transport-recovery | **真实包** `packages/llm-transport-recovery`（已装进 profile） | ✅ 是 |
 
-> 两个插件都已转为真实包并通过 `dsh plugin --profile web add` 安装到 `$DSH_HOME/profiles/web`，
-> `pnpm dsh web` 开机自动加载。源码改动经 `link:` 即时生效（改完重启 web）。
-> `plugins/` 下的动态写法仍保留，作为快速原型/对照，不参与开机自启。
+> 五个包均已通过 `dsh plugin --profile web add <路径>` 安装到 `$DSH_HOME/profiles/web`，
+> 每次 `dsh web` 启动自动挂载（与 dsh-base / dsh-web-app 同一机制）。源码改动经
+> `link:` 直达 profile，改完重启 web 即生效。`plugins/` 下的动态写法仅作快速原型/
+> 对照，不参与开机自启——重启后由同名真实包接管，行为一致。
+>
+> 移除/停用某个包：`dsh plugin --profile web remove @eeyzs1/dsh-<name>`，
+> 它会从 `dsh.profile.bundles` 组合层同步移除；重装用 add 即可（`link:` 秒装）。
+
+## 五、llm-transport-recovery 保留原因（2026-09-08 复核）
+
+上游 DSH（c389f96, 2026-09-08）**尚未修复**该插件针对的根因：
+
+- `packages/llm/llm-deepseek/src/adapter.ts` 仍直接 `await fetch(...)` 走全局
+  undici 连接池（共享 keep-alive、ALPN 可协商 h2），且留有 `TODO(http)` 注释；
+- 全库唯一操作 globalDispatcher 的是 http-proxy 代理支持，仅在配置了代理环境
+  变量时生效，与故障恢复无关；
+- 内置 `llm-retry` 的重试仍复用**同一个连接池**——正是当初「5 次重试全部
+  30-50ms 内失败、只有重启 DSH 才能恢复」的失败模式；
+- 2026-06 以来 adapter / llm-retry 的提交均为 attachment / session 格式 / 重构，
+  无传输恢复相关改动。
+
+若未来上游引入连接轮换 / dispatcher 重置 / 传输级恢复，可先用
+`dsh plugin --profile web remove @eeyzs1/dsh-llm-transport-recovery` 停用观察。

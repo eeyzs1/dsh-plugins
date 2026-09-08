@@ -3,3 +3,13 @@
 - insert:
     - id: attach-files
       name: '@eeyzs1/dsh-attach-files'
+
+# DSH 的 rpc-host.ts 在 connection 服务自身的上下文上注册 RPC 通道
+# （register() 里 owner = this.ctx，然后 owner.webServer.register(route)），
+# 而 dsh-web-app 的 connection 条目不 inject webServer —— 任何在启动期调用
+# connection.rpc.handle() 的插件都会崩：cannot get property "webServer" without
+# inject。这里覆盖 connection 条目的 inject（覆盖是整行替换，须带上原有的
+# webRuntime，其 config 的 !!js 表达式依赖它）。
+- id: connection
+  name: '@deepseek-ai/dsh-client-connection'
+  inject: [webRuntime, webServer]

@@ -92,11 +92,16 @@ exports.apply = function apply(ctx) {
     const [error, setError] = React.useState('')
     const [selected, setSelected] = React.useState({})
     const [busy, setBusy] = React.useState(false)
+    // Guards against out-of-order listings: rapid navigation fires several
+    // loadDir calls and a slow earlier response must not overwrite a newer one.
+    const listSeq = React.useRef(0)
 
     const loadDir = async (path) => {
+      const seq = ++listSeq.current
       setLoading(true); setError('')
       try {
         const res = await callAttach('list', { path })
+        if (seq !== listSeq.current) return // a newer navigation already landed
         if (res && !res.error) {
           setCwd(res.path || path)
           setDirs(res.dirs || [])
@@ -105,9 +110,10 @@ exports.apply = function apply(ctx) {
           setError((res && res.error) || '无法读取目录')
         }
       } catch (e) {
+        if (seq !== listSeq.current) return
         setError(String(e && e.message ? e.message : e))
       } finally {
-        setLoading(false)
+        if (seq === listSeq.current) setLoading(false)
       }
     }
 

@@ -232,11 +232,20 @@ function recoveryFetch(input, init, st) {
     const ips = [...candidates]
     // Parallel race across ALL candidate IPs (each with a short connect budget):
     // during a whole-CDN blackhole this fails in ~4s instead of N×6s sequentially.
-    const attempts = ips.map(ip =>
-      requestOnce({ u, method, headers, body, signal, ip, timeoutMs: 4000 })
-        .then(response => ({ _ip: ip, response })))
+    // One AbortController per candidate so the LOSERS can be aborted the moment
+    // a winner resolves — otherwise their already-connected sockets and
+    // unread response streams hang around until timeout/GC.
+    const controllers = ips.map(() => new AbortController())
+    const attempts = ips.map((ip, i) =>
+      requestOnce({
+        u, method, headers, body,
+        signal: signal ? AbortSignal.any([signal, controllers[i].signal]) : controllers[i].signal,
+        ip,
+        timeoutMs: 4000,
+      }).then(response => ({ _i: i, _ip: ip, response })))
     try {
       const winner = await Promise.any(attempts)
+      controllers.forEach((c, i) => { if (i !== winner._i) c.abort() })
       if (st) st.workingIp = winner._ip
       return winner.response
     } catch (aggregate) {
@@ -254,7 +263,7 @@ function recoveryFetch(input, init, st) {
 }
 
 /**
- * Install the resilient fetch wrapper ONCE.
+ * Install the resilient fetch wrapper ONCE, return its uninstaller.
  *
  * Fast path: HTTP/1.1 keep-alive agent (no HTTP/2 — the observed bad-MAC cause).
  * On a network-level failure the wrapper counts it; after FAST_ATTEMPTS (5)
@@ -262,12 +271,15 @@ function recoveryFetch(input, init, st) {
  * IP first, then every resolved IP with a brand-new connection. The recovery
  * path stays active until a request succeeds (phase resets to fast) or the
  * agent/request-error safety-net budget (TOTAL_LIMIT) is exhausted.
+ *
+ * The returned disposer restores the original fetch and destroys the agent, so
+ * plugin stop/update fully reverses the global patch (a re-apply then installs
+ * a fresh wrapper over the CURRENT agent instead of silently reusing this one).
  */
 function installResilientFetch(agent) {
   const originalFetch = globalThis.fetch
-  if (typeof originalFetch !== 'function' || globalThis[WRAP_SYMBOL] === true) return
-  globalThis[WRAP_SYMBOL] = true
-  globalThis.fetch = async function (...args) {
+  if (typeof originalFetch !== 'function' || globalThis[WRAP_SYMBOL] === true) return null
+  const wrapped = async function (...args) {
     let input = null
     let init = null
     try {
@@ -303,7 +315,10 @@ function installResilientFetch(agent) {
           st.failures = []
           return ok
         } catch (error) {
-          st.failures.push(now)
+          // A caller-side abort (user cancel) is not a network failure: never
+          // count it toward the recovery switch, and drain any stale entries.
+          if (error && (error.name === 'AbortError' || init?.signal?.aborted)) throw error
+          st.failures.push(Date.now())
           if (st.failures.length >= FAST_ATTEMPTS) {
             st.phase = 'recovery'
             st.recoveryUntil = now + RECOVERY_COOLDOWN_MS
@@ -329,31 +344,27 @@ function installResilientFetch(agent) {
       throw error
     }
   }
+  globalThis[WRAP_SYMBOL] = true
+  globalThis.fetch = wrapped
+  return () => {
+    if (globalThis.fetch === wrapped) {
+      globalThis.fetch = originalFetch
+      delete globalThis[WRAP_SYMBOL]
+    }
+    try { agent.destroy() } catch { /* already destroyed */ }
+  }
 }
 
 export function apply(ctx) {
   // HTTP/1.1 keep-alive agent for the fast path (avoids HTTP/2 — the observed
-  // bad-record-MAC cause on this network path).
+  // bad-record-MAC cause on this network path). Owned by THIS fiber: the
+  // disposer restores the original fetch and destroys the agent, so update
+  // installs a fresh wrapper over its own agent.
   const h1Agent = new https.Agent({ keepAlive: true, maxSockets: 16, maxFreeSockets: 8, keepAliveMsecs: 10000 })
-  installResilientFetch(h1Agent)
+  const uninstallFetch = installResilientFetch(h1Agent)
 
   const chains = new Map()
   let seq = 0
-
-  function renderChain(value) {
-    const parts = []
-    const seen = new Set()
-    let cur = value
-    while (cur !== null && cur !== undefined && typeof cur === 'object' && !seen.has(cur)) {
-      seen.add(cur)
-      let msg = ''
-      if (cur instanceof Error) msg = cur.message
-      else if (typeof cur.message === 'string') msg = cur.message
-      parts.push(msg || String(cur))
-      cur = cur.cause
-    }
-    return parts.join(' : ')
-  }
 
   function newRetryId() {
     seq += 1
@@ -456,21 +467,27 @@ export function apply(ctx) {
   //    single direct LLM call with no agent-level retry, so a clean TRANSPORT
   //    failure (before any chunk is emitted) is retried here with bounded
   //    backoff; mid-stream failures are never retried (no duplicated output).
+  //    Retries are RE-DISPATCHED through the public llm service
+  //    (llm.stream(...)) so the FULL middleware chain — including every
+  //    downstream llm/stream listener — runs again for each attempt. Calling
+  //    this dispatch's next() a second time would shift past the remaining
+  //    listeners straight to the adapter, silently bypassing them.
+  const RETRY_DISPATCH = Symbol.for('dsh.llmtrc.compaction-retry')
   disposers.push(ctx.on('llm/stream', (options, next) => {
-    const isCompaction = options?.purpose === 'compaction'
+    const isCompaction = options?.purpose === 'compaction' && !options[RETRY_DISPATCH]
     const makeStream = () => {
       let inner
       try {
         inner = next()
       } catch (error) {
-        console.error('[llm-transport-recovery] llm/stream next failed:', renderChain(error))
+        console.error('[llm-transport-recovery] llm/stream next failed:', renderChainSafe(error))
         throw error
       }
       return (async function* () {
         try {
           for await (const chunk of inner) yield chunk
         } catch (error) {
-          const msg = renderChain(error)
+          const msg = renderChainSafe(error)
           if (/(failed|TRANSPORT|TIMEOUT|ECONNRESET|ETIMEDOUT|fetch|terminated|socket)/i.test(msg)) {
             console.error('[llm-transport-recovery] stream error cause: ' + msg)
           }
@@ -481,17 +498,18 @@ export function apply(ctx) {
     if (!isCompaction) return makeStream()
     return (async function* () {
       let attempts = 0
+      let source = makeStream() // first attempt: this dispatch's continuation (next() exactly once)
       while (true) {
         attempts += 1
         let yielded = false
         try {
-          for await (const chunk of makeStream()) {
+          for await (const chunk of source) {
             yielded = true
             yield chunk
           }
           return
         } catch (error) {
-          const msg = renderChain(error)
+          const msg = renderChainSafe(error)
           const transportLike = /(failed|TRANSPORT|ECONNRESET|ETIMEDOUT|fetch|terminated|socket)/i.test(msg)
           if (!transportLike || yielded || attempts >= 6) throw error
           console.error('[llm-transport-recovery] compaction attempt ' + attempts + ' failed, retrying: ' + msg)
@@ -501,6 +519,9 @@ export function apply(ctx) {
           } catch {
             throw error // fiber disposed during backoff
           }
+          const llm = ctx.get('llm')
+          if (llm === undefined || typeof llm.stream !== 'function') throw error
+          source = llm.stream({ ...options, [RETRY_DISPATCH]: true })
         }
       }
     })()
@@ -511,7 +532,7 @@ export function apply(ctx) {
   disposers.push(ctx.on('agent/error', ({ agent, turn, step, error }) => {
     try {
       console.error('[llm-transport-recovery] agent ' + agent.id + ' turn ' + turn + ' step ' + step +
-        ' final: ' + renderChain(error))
+        ' final: ' + renderChainSafe(error))
     } catch (error) {
       console.error('[llm-transport-recovery] agent/error logging failed:', String(error))
     }
@@ -522,5 +543,8 @@ export function apply(ctx) {
       try { dispose() } catch (error) { /* ignore */ }
     }
     chains.clear()
+    // Reverse the global fetch patch and release the keep-alive agent with the
+    // fiber — no process-wide side effect outlives this plugin.
+    if (uninstallFetch) uninstallFetch()
   }
 }

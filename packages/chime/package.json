@@ -1,6 +1,6 @@
 {
   "name": "@eeyzs1/dsh-chime",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Play a chime when any conversation finishes a turn or waits for user input.",
   "type": "module",
   "main": "src/index.js",

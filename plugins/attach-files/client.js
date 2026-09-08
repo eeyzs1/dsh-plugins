@@ -66,11 +66,16 @@ return {
       const [error, setError] = React.useState('')
       const [selected, setSelected] = React.useState({})
       const [busy, setBusy] = React.useState(false)
+      // Guards against out-of-order listings: rapid navigation fires several
+      // loadDir calls and a slow earlier response must not overwrite a newer one.
+      const listSeq = React.useRef(0)
 
       const loadDir = async (path) => {
+        const seq = ++listSeq.current
         setLoading(true); setError('')
         try {
           const res = await host.call('attachfs/list', { path: path })
+          if (seq !== listSeq.current) return // a newer navigation already landed
           if (res && res.ok) {
             setCwd(res.path || path)
             setDirs(res.dirs || [])
@@ -79,9 +84,10 @@ return {
             setError((res && res.error) || '无法读取目录')
           }
         } catch (e) {
+          if (seq !== listSeq.current) return
           setError(String(e && e.message ? e.message : e))
         } finally {
-          setLoading(false)
+          if (seq === listSeq.current) setLoading(false)
         }
       }
 
@@ -109,6 +115,20 @@ return {
         if (p && p !== cwd) loadDir(p)
       }
 
+      // Write the draft through the action when present, falling back to the
+      // input store — mirroring the package client so a missing inputActions
+      // never silently drops the user's selection.
+      const setDraft = (text) => {
+        if (props.inputActions && typeof props.inputActions.setDraft === 'function') {
+          props.inputActions.setDraft(text)
+          return
+        }
+        const input = props.input
+        if (input && input.store && typeof input.store.write === 'function') {
+          try { input.store.write({ draft: text }) } catch (e) {}
+        }
+      }
+
       const addPaths = () => {
         const sels = Object.keys(selected).map((k) => selected[k])
         if (sels.length === 0) return
@@ -118,8 +138,7 @@ return {
         })
         const text = refs.join('\n')
         const cur = props.input ? props.input.draft : ''
-        const draft = cur ? cur + '\n' + text : text
-        if (props.inputActions) props.inputActions.setDraft(draft)
+        setDraft(cur ? cur + '\n' + text : text)
         setOpen(false)
       }
 
@@ -152,8 +171,7 @@ return {
           const text = parts.join('\n')
           if (text) {
             const cur = props.input ? props.input.draft : ''
-            const draft = cur ? cur + '\n\n' + text : text
-            if (props.inputActions) props.inputActions.setDraft(draft)
+            setDraft(cur ? cur + '\n\n' + text : text)
           }
           setOpen(false)
         } catch (e) {

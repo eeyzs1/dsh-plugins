@@ -62,14 +62,27 @@ return {
 
     harness.handle('attachfs/read', async (args) => {
       const paths = (args && Array.isArray(args.paths)) ? args.paths : []
-      const MAX_FILE = 100000
+      const MAX_FILE = 100000 // characters kept after decode
+      const MAX_BYTES = MAX_FILE * 4 // pre-read size guard (UTF-8 worst case)
       const files = []
       for (const p of paths) {
         try {
           const target = await fs.resolve(String(p))
+          // Size guard first: the fs service reads whole files, so a huge file
+          // must be rejected before the read instead of buffered whole.
+          const info = await fs.stat(target)
+          if (info && typeof info.size === 'number' && info.size > MAX_BYTES) {
+            files.push({ path: String(p), content: null, note: '文件过大（' + info.size + ' 字节），请改用「添加路径」以 @file: 引用' })
+            continue
+          }
+          // readText rejects binary targets (FS_NOT_TEXT) — that lands in the
+          // note branch below, which is exactly the right UX.
           let text = await fs.readText(target)
           let truncated = false
-          if (text.length > MAX_FILE) { text = text.slice(0, MAX_FILE); truncated = true }
+          if (text.length > MAX_FILE) {
+            text = text.slice(0, MAX_FILE).replace(/[\uD800-\uDBFF]$/, '') // never end on a lone surrogate
+            truncated = true
+          }
           files.push({ path: String(p), content: text, truncated: truncated })
         } catch (err) {
           files.push({ path: String(p), content: null, note: String(err && err.message ? err.message : err) })

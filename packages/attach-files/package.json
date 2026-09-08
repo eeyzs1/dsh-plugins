@@ -1,6 +1,6 @@
 {
   "name": "@eeyzs1/dsh-attach-files",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Add files/directories to the conversation as @file:/@dir: references or expanded content.",
   "type": "module",
   "main": "src/index.js",

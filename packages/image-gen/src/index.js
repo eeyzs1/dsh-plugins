@@ -70,7 +70,7 @@ export function apply(ctx) {
       }
 
       const cred = await credentials.resolve('ZHIPU_API_KEY')
-      if (cred === undefined) {
+      if (cred === undefined || !cred.value) {
         throw new Error('ZHIPU_API_KEY is not configured; set it in .credentials.yaml')
       }
       const key = cred.value
@@ -78,9 +78,12 @@ export function apply(ctx) {
       const sp = ctx.get('sandboxPolicy')
       const policy = (sp && exec.agent) ? sp.resolve({ session: exec.agent.session }) : undefined
 
+      // The key travels through the child's ENVIRONMENT, never the command
+      // line: a `pwsh -Command` string is world-readable via process listings
+      // (Get-CimInstance Win32_Process), a child's env is not.
       const ps = [
         "$ErrorActionPreference='Stop'",
-        "$key='" + q(key) + "'",
+        "$key=$env:ZHIPU_API_KEY",
         "$headers=@{Authorization=('Bearer '+$key)}",
         "$body=@{model='" + q(model) + "';prompt='" + q(prompt) + "';size='" + q(size) + "'}|ConvertTo-Json -Compress",
         "$bytes=[System.Text.Encoding]::UTF8.GetBytes($body)",
@@ -100,7 +103,9 @@ export function apply(ctx) {
 
       const spec = shell.resolve({
         command: ps,
-        timeoutMs: 240000,
+        env: { ZHIPU_API_KEY: key },
+        // Margin over the two internal budgets (120s API + 180s download).
+        timeoutMs: 330000,
         stdoutMaxBytes: 65536,
         signal: exec.signal,
         ...(policy !== undefined ? { sandboxPolicy: policy } : {}),
@@ -111,8 +116,10 @@ export function apply(ctx) {
         throw new Error('image generation failed (exit ' + result.exitCode + '): ' + errText)
       }
       const stdoutText = result.stdout && result.stdout.text ? result.stdout.text : ''
-      const m = /SAVED:(.+?)\s*$/.exec(stdoutText)
-      const finalPath = m ? m[1].trim() : outputPath
+      // Last SAVED: line wins; /m keeps the match to one line even if more
+      // output follows it.
+      const matches = [...stdoutText.matchAll(/SAVED:(.+)$/gm)]
+      const finalPath = matches.length > 0 ? matches[matches.length - 1][1].trim() : outputPath
       return { output_path: finalPath, model, size }
     },
   })))

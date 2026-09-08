@@ -2,3 +2,9 @@
 Thumbs.db
 *.log
 node_modules/
+
+# 根目录的本地调试/试验杂物（不随仓库分发）
+/check-window.mjs
+/context-size.mjs
+/*.jpg
+/报修材料-*.md

@@ -36,30 +36,39 @@ function browserServerConfig(mode) {
 }
 
 export function apply(ctx) {
-  const tools = ctx.get('tools')
-  if (tools === undefined) return
-
+  const tools = ctx.tools // hard dependency declared via inject
   const disposers = []
-  let mode = 'headless'
+  let mode = 'headless' // last SUCCESSFULLY mounted mode (what get_mode reports)
+  let requestedMode = 'headless'
   let browserFiber = null
   let browserMounted = false
+  // Serializes mounts: two concurrent switch requests (or a switch racing the
+  // initial mount) would otherwise both spawn an mcp-client fiber and the
+  // first one — a live stdio server — would leak with no reference left.
+  let mountQueue = Promise.resolve()
 
-  async function mountBrowser(nextMode) {
+  async function doMount(nextMode) {
     if (browserFiber) {
       try { await browserFiber.dispose() } catch (error) {
         console.error('[browser-use] dispose old server failed:', String(error))
       }
       browserFiber = null
     }
-    mode = nextMode
     browserMounted = false
     try {
       browserFiber = await ctx.plugin(mcpClient, browserServerConfig(nextMode))
       browserMounted = true
+      mode = nextMode // report only what actually mounted
     } catch (error) {
       console.error('[browser-use] mount server failed in ' + nextMode + ' mode:', String(error))
       browserFiber = null
     }
+  }
+
+  function mountBrowser(nextMode) {
+    requestedMode = nextMode
+    mountQueue = mountQueue.then(() => doMount(nextMode), () => doMount(nextMode))
+    return mountQueue
   }
 
   disposers.push(tools.register(defineTool({
@@ -90,7 +99,9 @@ export function apply(ctx) {
     async execute(args) {
       const next = args.mode === 'headed' ? 'headed' : 'headless'
       await mountBrowser(next)
-      return { mode: next, reconnected: browserMounted }
+      // mode is the last SUCCESSFULLY mounted mode; if the remount failed the
+      // tool says so via reconnected:false instead of claiming the new mode.
+      return { mode, reconnected: browserMounted && mode === next }
     },
   })))
 
@@ -117,13 +128,19 @@ export function apply(ctx) {
   // Initial mount: headless background automation by default.
   void mountBrowser('headless')
 
-  return () => {
+  return async () => {
     for (const dispose of disposers) {
       try { dispose() } catch (error) { /* ignore */ }
     }
-    if (browserFiber) {
-      try { void browserFiber.dispose() } catch (error) { /* ignore */ }
-      browserFiber = null
+    // Wait for any mount still in flight FIRST, then take whatever fiber the
+    // queue left — capturing earlier would miss a fiber the queued mount sets.
+    try {
+      await mountQueue
+    } catch { /* queued mount already reported its own failure */ }
+    const fiber = browserFiber
+    browserFiber = null
+    if (fiber) {
+      try { await fiber.dispose() } catch (error) { /* ignore */ }
     }
   }
 }

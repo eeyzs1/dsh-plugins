@@ -5,6 +5,12 @@ var module = { exports: {} }; var exports = module.exports;
 // Do not use ESM import/export here; the browser loads the built artifact as a classic script.
 const React = require('react')
 
+// Fallback hook for compositions that do not provide the pending-interaction
+// root source yet: keeps the hook call inside Notifier UNCONDITIONAL (Rules of
+// Hooks) instead of branching on the prop's presence per render.
+const EMPTY_PENDING = new Map()
+const useNoPending = () => EMPTY_PENDING
+
 exports.inject = ['slots']
 
 exports.apply = function apply(ctx) {
@@ -54,9 +60,11 @@ exports.apply = function apply(ctx) {
   // no flash overlay — the user is away from the screen and relies on audio
 
   const playChime = (kind) => {
-    // Audible at any reasonable setting exactly because the user is usually NOT
-    // looking at the screen. A loud-enough floor plus a brighter timbre.
-    const raw = Math.pow(Math.max(0, Math.min(1, volume)), 1.2) * 1.9
+    // Volume 0 means mute — respect it exactly. Any nonzero setting stays
+    // audible (the user is usually NOT looking at the screen), so a loud-enough
+    // floor plus a brighter timbre applies only above zero.
+    if (volume <= 0.0001) return
+    const raw = Math.pow(Math.min(1, volume), 1.2) * 1.9
     const peak = Math.max(0.08, Math.min(1, raw))
     const ac = getAudioCtx()
     // Skip while still suspended (pre-gesture Safari / fresh-load autoplay
@@ -99,11 +107,10 @@ exports.apply = function apply(ctx) {
     const useSessions = props.useSessions
     const list = useSessions((s) => s)
     // Pending interactions now live in a separate root observable
-    // (useSessionPendingInteraction) instead of the session summary.
-    const usePending = typeof props.useSessionPendingInteraction === 'function'
-      ? props.useSessionPendingInteraction
-      : null
-    const pendingMap = usePending ? usePending((m) => m) : null
+    // (useSessionPendingInteraction) instead of the session summary. Resolved
+    // ONCE here so the hook call below is unconditional.
+    const usePending = props.useSessionPendingInteraction || useNoPending
+    const pendingMap = usePending((m) => m)
 
     React.useEffect(() => { getAudioCtx() }, [])
 
@@ -145,7 +152,7 @@ exports.apply = function apply(ctx) {
         }
       }
       // Pending source: any session with a pending interaction.
-      if (pendingMap && pendingMap.size > 0) {
+      if (pendingMap.size > 0) {
         for (const sid of pendingMap.keys()) {
           const sidStr = String(sid)
           if (cur[sidStr]) cur[sidStr].pending = true
@@ -169,7 +176,13 @@ exports.apply = function apply(ctx) {
 
   ctx.slots.inject('shell.overlay', () => ctx.slots.register(
     { name: 'shell.overlay', id: 'turn-sound', order: 0 },
-    (props) => React.createElement(Notifier, { useSessions: props.useSessions }),
+    // Forward BOTH standard props: useSessionPendingInteraction is a root
+    // standard source of shell.overlay — dropping it silently disabled the
+    // pending-interaction chime.
+    (props) => React.createElement(Notifier, {
+      useSessions: props.useSessions,
+      useSessionPendingInteraction: props.useSessionPendingInteraction,
+    }),
   ))
 
   const rowStyle = {

@@ -11,6 +11,19 @@ DeepSeek Harness（DSH）**动态 Cordis 插件**集合。
 - [chime](plugins/chime/README.md) — 回合完成与互动提示音（纯 Client，Web Audio 合成 + 音量调节）
 - [attach-files](plugins/attach-files/README.md) — 添加文件/目录到对话（📁 按钮 + 文件选择器）
 
+## 两种分发形态
+
+同一批插件以两种形态共存，**`packages/` 是活跃开发线**，`plugins/` 是可直接粘贴的动态插件版：
+
+| | `plugins/<id>/` | `packages/<id>/` |
+|---|---|---|
+| 形态 | manifest + 函数体源码，经 `cordis_define`/`cordis_run` 动态加载 | npm 包（`@eeyzs1/dsh-*`），profile 常驻安装 |
+| 安装 | 见 [LOAD.md](LOAD.md) | `dsh plugin --profile web add <路径>` |
+| 校验 | `node scripts/check.js` | 各包自带 `build.mjs`（chime / attach-files 需先构建 `lib/`） |
+
+`packages/` 下另有三个仅包形态的插件：`browser-use`（browser-use MCP 集成 + 无头/有头切换工具）、`image-gen`（智谱 CogView 文生图工具）、`llm-transport-recovery`（DeepSeek 传输故障两阶段恢复）。
+两棵树的同名插件保持逻辑同步——修改其一（如 chime）时请同步另一棵，或明确注明分叉。
+
 ## 社区
 
 - 本仓库在 GitHub 标记了 [`dsh-plugin`](https://github.com/topics/dsh-plugin) 话题，便于社区发现。

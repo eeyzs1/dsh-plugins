@@ -5,7 +5,7 @@ return {
 
     // 共享内存态音量（0..1）。动态插件是进程本地的，重启后会回到默认值；
     // 不使用持久化设置后端。
-    let volume = 0.35
+    let volume = 0.5
 
     // 惰性创建的 Web Audio 上下文，随本次运行生命周期，dispose 时关闭。
     let audioCtx = null
@@ -20,46 +20,86 @@ return {
       }
       return audioCtx
     }
+
+    // Safari unlock: unlike Chrome, WebKit only lets AudioContext.resume()
+    // succeed when called INSIDE a real user gesture. The context is created at
+    // mount (no gesture), so programmatic resume() from playChime is silently
+    // rejected and chimes stay mute. Hook the first pointerdown/keydown/touchend
+    // and resume there; detach once running.
+    const unlockEvents = ['pointerdown', 'keydown', 'touchend']
+    const detachUnlock = () => {
+      unlockEvents.forEach((e) => window.removeEventListener(e, onGesture, true))
+    }
+    const onGesture = () => {
+      if (audioCtx === null) return
+      if (audioCtx.state !== 'suspended') { detachUnlock(); return }
+      audioCtx.resume().then(() => {
+        if (audioCtx !== null && audioCtx.state === 'running') detachUnlock()
+      }, () => {})
+    }
+    unlockEvents.forEach((e) => window.addEventListener(e, onGesture, { capture: true, passive: true }))
+
     ctx.effect(() => () => {
+      detachUnlock()
       if (audioCtx !== null) {
         try { audioCtx.close() } catch (e) {}
         audioCtx = null
       }
     })
 
-    // 现场合成短提示音：'done' 用上行双音，'action' 用下行双音，便于区分。
+    // 现场合成短提示音：'done' 上行三音，'action' 重复下行双音，便于区分。
     const playChime = (kind) => {
-      const peak = Math.max(0, Math.min(1, volume))
-      if (peak <= 0.0001) return // 静音
+      // 音量 0 = 静音；非零时保持足够响度（用户通常不在看屏幕）。
+      if (volume <= 0.0001) return
+      const raw = Math.pow(Math.min(1, volume), 1.2) * 1.9
+      const peak = Math.max(0.08, Math.min(1, raw))
       const ac = getAudioCtx()
-      if (ac === null) return
-      const notes = kind === 'done'
-        ? [{ f: 659.25, at: 0, d: 0.14 }, { f: 880, at: 0.15, d: 0.22 }]
-        : [{ f: 880, at: 0, d: 0.10 }, { f: 440, at: 0.12, d: 0.18 }]
+      // 上下文仍挂起时（Safari 未解锁 / 自动播放策略）直接跳过：冻结时钟上
+      // 排下的音符会在解锁瞬间一齐炸响。
+      if (ac === null || ac.state !== 'running') return
+
+      // 每个音符 = 正弦 + 两个八度（更亮、更难忽略）；'done' 上行三音，
+      // 'action' 重复下行双音。
+      const synth = (freq, at, dur, vol) => {
+        ;[freq, freq * 2].forEach((f, i) => {
+          const osc = ac.createOscillator()
+          const gain = ac.createGain()
+          osc.type = i === 0 ? 'sine' : 'triangle'
+          osc.frequency.setValueAtTime(f, at)
+          gain.gain.setValueAtTime(0.0001, at)
+          gain.gain.exponentialRampToValueAtTime(vol * peak, at + 0.02)
+          gain.gain.exponentialRampToValueAtTime(0.0001, at + dur)
+          osc.connect(gain)
+          gain.connect(ac.destination)
+          osc.start(at)
+          osc.stop(at + dur + 0.05)
+        })
+      }
+
       const t0 = ac.currentTime
-      notes.forEach((n) => {
-        const osc = ac.createOscillator()
-        const gain = ac.createGain()
-        osc.type = 'sine'
-        osc.frequency.setValueAtTime(n.f, t0 + n.at)
-        gain.gain.setValueAtTime(0.0001, t0 + n.at)
-        gain.gain.exponentialRampToValueAtTime(peak, t0 + n.at + 0.02)
-        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + n.at + n.d)
-        osc.connect(gain)
-        gain.connect(ac.destination)
-        osc.start(t0 + n.at)
-        osc.stop(t0 + n.at + n.d + 0.03)
-      })
+      if (kind === 'done') {
+        const seq = [[659.25, 0, 0.16], [783.99, 0.17, 0.16], [987.77, 0.34, 0.28]]
+        seq.forEach(([f, at, d]) => synth(f, t0 + at, d, 0.75))
+      } else {
+        const seq = [[880, 0, 0.13], [440, 0.13, 0.18], [880, 0.34, 0.13], [440, 0.47, 0.24]]
+        seq.forEach(([f, at, d]) => synth(f, t0 + at, d, 0.85))
+      }
     }
 
-    // --- 全局通知器：挂在根级常驻槽 shell.overlay，监听「会话列表」而非单个会话 ---
-    // 会话列表的 SessionSummary 自带 running / pendingInteraction / completed，
-    // 因此无论你正看着哪个对话，任何对话的回合完成或需要输入都能触发。
+    // Fallback hook：让 Notifier 内的 hook 调用无条件执行（Rules of Hooks），
+    // 而不是按 prop 是否存在分支。
+    const EMPTY_PENDING = new Map()
+    const useNoPending = () => EMPTY_PENDING
+
+    // --- 全局通知器：挂在根级常驻槽 shell.overlay，监听「会话列表」+ 待互动映射 ---
     const Notifier = (props) => {
       const useSessions = props.useSessions
       const list = useSessions((s) => s)
+      // 待互动状态位于独立根 observable（useSessionPendingInteraction），
+      // 不在会话摘要里。这里一次性解析，下面的 hook 调用保持无条件。
+      const usePending = props.useSessionPendingInteraction || useNoPending
+      const pendingMap = usePending((m) => m)
 
-      // 提前解锁音频，避免浏览器自动播放策略吞掉第一声。
       React.useEffect(() => { getAudioCtx() }, [])
 
       const prev = React.useRef(null)
@@ -69,9 +109,35 @@ return {
         for (const id in byId) {
           const s = byId[id]
           if (!s) continue
+          // Goal projection: { goal: { phase }, roundsStarted, ... } or null.
+          const gp = (s.projectionValues && s.projectionValues.goal) || null
+          const hasGoal = !!gp
+          const phase = gp ? (gp.goal && gp.goal.phase) : undefined
+          const roundsStarted = gp ? gp.roundsStarted : 0
+          const maxRounds = gp && gp.goal ? gp.goal.maxGoalRounds : 0
+
+          // 仅在 goal 仍处于 active 且自动续轮预算未尽时抑制逐轮 'done'：
+          // 其余状态（无 goal、complete/blocked/paused、预算耗尽）回落到普通
+          // 回合结束提示音。
+          const autoGoal = hasGoal && phase === 'active'
+            && !(maxRounds > 0 && roundsStarted >= maxRounds)
+
+          // 子代理会话不响 'done'（其生命周期是内部工作，父会话的回合结束音
+          // 才是用户可感知的信号）。待互动提示音刻意不过滤 —— 被卡住的子代理
+          // 仍需要用户注意。
+          const isSubagent = s.origin === 'subagent'
+
           cur[id] = {
-            done: !s.running || !!s.completed,
-            pending: !!s.pendingInteraction,
+            done: autoGoal || isSubagent ? false : (!s.running || !!s.completed),
+            pending: false,
+          }
+        }
+        // 待互动来源：任何有待互动的会话。
+        if (pendingMap.size > 0) {
+          for (const sid of pendingMap.keys()) {
+            const sidStr = String(sid)
+            if (cur[sidStr]) cur[sidStr].pending = true
+            else cur[sidStr] = { done: false, pending: true }
           }
         }
         if (prev.current === null) { prev.current = cur; return }
@@ -81,17 +147,22 @@ return {
           const a = cur[id]
           if (!b) continue // 通知器挂载后才出现的会话，首次不响
           if (!b.done && a.done) playChime('done')         // 任一对话回合完成
-          if (!b.pending && a.pending) playChime('action') // 任一对话需要选择
+          if (!b.pending && a.pending) playChime('action') // 任一对话需要用户输入
         }
         prev.current = cur
-      }, [list])
+      }, [list, pendingMap])
 
       return null
     }
 
     slots.inject('shell.overlay', () => slots.register(
       { name: 'shell.overlay', id: 'turn-sound', order: 0 },
-      (props) => React.createElement(Notifier, { useSessions: props.useSessions }),
+      // 两个标准 prop 都必须转发：useSessionPendingInteraction 是 shell.overlay
+      // 的根级标准源，漏传会静默禁用待互动提示音。
+      (props) => React.createElement(Notifier, {
+        useSessions: props.useSessions,
+        useSessionPendingInteraction: props.useSessionPendingInteraction,
+      }),
     ))
 
     // --- 设置 > 常规 里的音量行 ---

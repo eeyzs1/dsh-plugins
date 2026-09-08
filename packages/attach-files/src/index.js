@@ -4,7 +4,7 @@
 // fs/promises directly with per-entry tolerance, so a permission-protected
 // child (e.g. E:\System Volume Information) is skipped instead of aborting the
 // whole directory listing — this is what makes full-disk browsing work.
-import { readdir, stat, readFile } from 'node:fs/promises'
+import { readdir, stat, open } from 'node:fs/promises'
 import { join, isAbsolute } from 'node:path'
 
 export const name = '@eeyzs1/dsh-attach-files'
@@ -27,8 +27,9 @@ export function apply(ctx) {
   }
 
   // Register once; the disposer is owned by ctx.effect so stop/update removes
-  // the channel with the fiber.
-  ctx.effect(() => connection.rpc.handle('/attach', handler, { authority: 'loopback' }))
+  // the channel with the fiber. (The channel is authenticated by the
+  // connection transport itself — there is no extra authority option.)
+  ctx.effect(() => connection.rpc.handle('/attach', handler))
 
   async function rootOf(args) {
     let root = ''
@@ -78,39 +79,65 @@ export function apply(ctx) {
 
     const dirs = []
     const files = []
-    for (const d of dirents) {
-      const child = join(path, d.name)
-      let isDir = d.isDirectory()
-      let isFile = d.isFile()
-      let size = null
-      // Symlinks and unknown types need a stat probe; skip if the probe fails
-      // (permission, vanished, etc.) so one bad child never aborts the list.
-      try {
-        if (!isDir && !isFile) {
-          const st = await stat(child)
-          isDir = st.isDirectory()
-          isFile = st.isFile()
-        }
-        if (isFile) size = (await stat(child)).size
-      } catch (e) {
-        continue // unreadable child — skip
+    // One stat per entry, batched for concurrency: a plain non-symlink
+    // directory needs no probe (dirent already settled it); everything else —
+    // files need their size, symlinks need their target type — is probed once.
+    // A failed probe (permission, vanished) skips that child only, so one bad
+    // entry never aborts the whole listing.
+    const BATCH = 32
+    for (let i = 0; i < dirents.length; i += BATCH) {
+      const batch = dirents.slice(i, i + BATCH)
+      const probed = await Promise.all(batch.map(async (d) => {
+        const child = join(path, d.name)
+        const plainDir = d.isDirectory() && !d.isSymbolicLink()
+        if (plainDir) return { name: d.name, path: child, kind: 'directory', size: null }
+        try {
+          const st = await stat(child) // follows symlinks — a link behaves as its target
+          if (st.isDirectory()) return { name: d.name, path: child, kind: 'directory', size: null }
+          if (st.isFile()) return { name: d.name, path: child, kind: 'file', size: st.size }
+        } catch (e) { /* unreadable child — skip */ }
+        return null
+      }))
+      for (const entry of probed) {
+        if (entry === null) continue
+        if (entry.kind === 'directory') dirs.push({ name: entry.name, type: 'directory', size: null, path: entry.path })
+        else files.push({ name: entry.name, type: 'file', size: entry.size, path: entry.path })
       }
-      if (isDir) dirs.push({ name: d.name, type: 'directory', size: null, path: child })
-      else if (isFile) files.push({ name: d.name, type: 'file', size, path: child })
     }
     return { ok: true, path, dirs, files }
   }
 
   async function readFiles(args) {
     const paths = (args && Array.isArray(args.paths)) ? args.paths.map((p) => String(p)) : []
-    const MAX_FILE = 100000
+    const MAX_FILE = 100000 // characters kept
+    const MAX_BYTES = MAX_FILE * 4 // UTF-8 worst case — bounds memory per file to ~400KB
     const files = []
     for (const p of paths) {
       try {
-        const buf = await readFile(p)
-        let text = buf.toString('utf8')
-        let truncated = false
-        if (text.length > MAX_FILE) { text = text.slice(0, MAX_FILE); truncated = true }
+        // Read only the head of the file: a multi-GB file selected by mistake
+        // must not be buffered whole before truncation.
+        const fh = await open(p, 'r')
+        let text
+        let hitByteCap = false
+        try {
+          const buf = Buffer.alloc(MAX_BYTES)
+          const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+          hitByteCap = bytesRead === buf.length
+          text = buf.toString('utf8', 0, bytesRead)
+        } finally {
+          await fh.close()
+        }
+        // A NUL byte in the head means binary (image/archive/PE...) — decoding
+        // it as UTF-8 into the draft is useless garbage; refuse with a note.
+        if (text.indexOf('\u0000') !== -1) {
+          files.push({ path: p, content: null, note: '二进制文件，无法作为文本展开（可改用「添加路径」引用）' })
+          continue
+        }
+        let truncated = hitByteCap
+        if (text.length > MAX_FILE) {
+          text = text.slice(0, MAX_FILE).replace(/[\uD800-\uDBFF]$/, '') // never end on a lone surrogate
+          truncated = true
+        }
         files.push({ path: p, content: text, truncated })
       } catch (err) {
         files.push({ path: p, content: null, note: String(err && err.message ? err.message : err) })

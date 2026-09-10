@@ -49,10 +49,13 @@ return {
 
     // 现场合成短提示音：'done' 上行三音，'action' 重复下行双音，便于区分。
     const playChime = (kind) => {
-      // 音量 0 = 静音；非零时保持足够响度（用户通常不在看屏幕）。
+      // 音量 0 = 静音；非零时滑杆线性映射到感知响度（sones ∝ A^0.6，Stevens
+      // 幂律），故振幅 = (0.05 + 0.95·v)^(5/3)：每格等响度步进、全程 ~28 dB、
+      // 无死区。旧 v^1.2·1.9 曲线 ≥60% 全部钳到 1.0（顶部 40% 无效）、
+      // 0-7% 贴 0.08 地板。
       if (volume <= 0.0001) return
-      const raw = Math.pow(Math.min(1, volume), 1.2) * 1.9
-      const peak = Math.max(0.08, Math.min(1, raw))
+      const v = Math.max(0, Math.min(1, volume))
+      const peak = Math.pow(0.05 + 0.95 * v, 5 / 3)
       const ac = getAudioCtx()
       // 上下文仍挂起时（Safari 未解锁 / 自动播放策略）直接跳过：冻结时钟上
       // 排下的音符会在解锁瞬间一齐炸响。

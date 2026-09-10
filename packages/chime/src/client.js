@@ -58,12 +58,15 @@ exports.apply = function apply(ctx) {
   // no flash overlay — the user is away from the screen and relies on audio
 
   const playChime = (kind) => {
-    // Volume 0 means mute — respect it exactly. Any nonzero setting stays
-    // audible (the user is usually NOT looking at the screen), so a loud-enough
-    // floor plus a brighter timbre applies only above zero.
+    // Volume 0 means mute — respect it exactly. Above zero the slider maps
+    // LINEARLY onto perceived loudness: sones ∝ amplitude^0.6 (Stevens;
+    // 10× intensity ≈ 2× loudness), so amplitude = (0.05 + 0.95·v)^(5/3).
+    // Every notch is an equal loudness step (~0.095 sones per 10%), the span
+    // is ~28 dB, and no zone is dead — the old v^1.2·1.9 curve clamped
+    // everything ≥60% to 1.0 (top 40% did nothing) and floored 0-7% at 0.08.
     if (volume <= 0.0001) return
-    const raw = Math.pow(Math.min(1, volume), 1.2) * 1.9
-    const peak = Math.max(0.08, Math.min(1, raw))
+    const v = Math.max(0, Math.min(1, volume))
+    const peak = Math.pow(0.05 + 0.95 * v, 5 / 3)
     const ac = getAudioCtx()
     // Skip while still suspended (pre-gesture Safari / fresh-load autoplay
     // block): notes scheduled on a frozen clock would all fire at once as a

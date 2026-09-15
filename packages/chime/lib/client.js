@@ -32,18 +32,23 @@ exports.apply = function apply(ctx) {
   // Safari unlock: unlike Chrome, WebKit only lets AudioContext.resume()
   // succeed when called INSIDE a real user gesture. The context is created at
   // mount (no gesture), so programmatic resume() from playChime is silently
-  // rejected and chimes stay mute. Hook the first pointerdown/keydown/touchend
-  // and resume there; detach once running.
+  // rejected. Hook pointerdown/keydown/touchend and resume there.
+  //
+  // The listeners stay attached for the plugin's LIFETIME: WebKit can
+  // RE-suspend the context later (long-backgrounded tab, system sleep/wake,
+  // audio device switch), and a once-only unlock went permanently mute after
+  // that — playChime skipped the chime and no listener remained to re-unlock.
+  // While running the handler is a single state check, so persistent
+  // listeners are effectively free.
   const unlockEvents = ['pointerdown', 'keydown', 'touchend']
-  const detachUnlock = () => {
-    unlockEvents.forEach((e) => window.removeEventListener(e, onGesture, true))
-  }
   const onGesture = () => {
     if (audioCtx === null) return
-    if (audioCtx.state !== 'suspended') { detachUnlock(); return }
-    audioCtx.resume().then(() => {
-      if (audioCtx !== null && audioCtx.state === 'running') detachUnlock()
-    }, () => {})
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(() => {})
+    }
+  }
+  const detachUnlock = () => {
+    unlockEvents.forEach((e) => window.removeEventListener(e, onGesture, true))
   }
   unlockEvents.forEach((e) => window.addEventListener(e, onGesture, { capture: true, passive: true }))
 

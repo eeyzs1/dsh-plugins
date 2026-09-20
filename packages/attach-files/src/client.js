@@ -96,6 +96,17 @@ exports.apply = function apply(ctx) {
     // loadDir calls and a slow earlier response must not overwrite a newer one.
     const listSeq = React.useRef(0)
 
+    // Live composer text. The session-standard useInput selector exposes the
+    // clipboard-text projection of the editor document; props.input.draft is
+    // the legacy dynamic-era shape kept as fallback. Without this read the
+    // append in addPaths/expandContent degenerated into a replace —
+    // InputActions.setDraft clears the WHOLE editor document (root.clear()),
+    // wiping whatever the user had typed before opening the picker.
+    const useInput = typeof props.useInput === 'function' ? props.useInput : null
+    const draftNow = useInput !== null
+      ? useInput((s) => (s && typeof s.draft === 'string' ? s.draft : ''))
+      : (props.input && typeof props.input.draft === 'string' ? props.input.draft : '')
+
     const loadDir = async (path) => {
       const seq = ++listSeq.current
       setLoading(true); setError('')
@@ -152,10 +163,7 @@ exports.apply = function apply(ctx) {
       }
     }
 
-    const curDraft = () => {
-      const input = props.input
-      return input && typeof input.draft === 'string' ? input.draft : ''
-    }
+    const curDraft = () => draftNow
 
     const addPaths = () => {
       const sels = Object.keys(selected).map((k) => selected[k])

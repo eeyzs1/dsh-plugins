@@ -70,6 +70,16 @@ return {
       // loadDir calls and a slow earlier response must not overwrite a newer one.
       const listSeq = React.useRef(0)
 
+      // Live composer text via the session-standard useInput selector
+      // (clipboard-text projection of the editor document); props.input.draft
+      // is the legacy shape kept as fallback. Without this read the append in
+      // addPaths/expandContent degenerated into a replace — setDraft clears
+      // the WHOLE editor document, wiping what the user typed before the picker.
+      const useInput = typeof props.useInput === 'function' ? props.useInput : null
+      const draftNow = useInput !== null
+        ? useInput((s) => (s && typeof s.draft === 'string' ? s.draft : ''))
+        : (props.input && typeof props.input.draft === 'string' ? props.input.draft : '')
+
       const loadDir = async (path) => {
         const seq = ++listSeq.current
         setLoading(true); setError('')
@@ -137,7 +147,7 @@ return {
           return '@file:' + s.path + (s.size != null ? ' (' + fmtSize(s.size) + ')' : '')
         })
         const text = refs.join('\n')
-        const cur = props.input ? props.input.draft : ''
+        const cur = draftNow
         setDraft(cur ? cur + '\n' + text : text)
         setOpen(false)
       }
@@ -170,7 +180,7 @@ return {
           for (const d of dirSels) parts.push('@dir:' + d.path)
           const text = parts.join('\n')
           if (text) {
-            const cur = props.input ? props.input.draft : ''
+            const cur = draftNow
             setDraft(cur ? cur + '\n\n' + text : text)
           }
           setOpen(false)

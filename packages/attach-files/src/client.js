@@ -73,6 +73,10 @@ exports.apply = function apply(ctx) {
     if (i < 0) return ''
     let parent = s.slice(0, i)
     if (/^[A-Za-z]:$/.test(parent)) parent += '\\'
+    // POSIX: one level below root slices to '' — the root itself is a valid
+    // destination ('/Users' → '/'). Without this the picker could never
+    // navigate up to '/', stranding the user at /Users on macOS.
+    if (parent === '' && s.startsWith('/')) return '/'
     return parent
   }
 
@@ -96,16 +100,13 @@ exports.apply = function apply(ctx) {
     // loadDir calls and a slow earlier response must not overwrite a newer one.
     const listSeq = React.useRef(0)
 
-    // Live composer text. The session-standard useInput selector exposes the
-    // clipboard-text projection of the editor document; props.input.draft is
-    // the legacy dynamic-era shape kept as fallback. Without this read the
-    // append in addPaths/expandContent degenerated into a replace —
-    // InputActions.setDraft clears the WHOLE editor document (root.clear()),
-    // wiping whatever the user had typed before opening the picker.
-    const useInput = typeof props.useInput === 'function' ? props.useInput : null
-    const draftNow = useInput !== null
-      ? useInput((s) => (s && typeof s.draft === 'string' ? s.draft : ''))
-      : (props.input && typeof props.input.draft === 'string' ? props.input.draft : '')
+    // Live composer text via the session-standard useInput selector
+    // (clipboard-text projection of the editor document). The prop is
+    // normalized to an ALWAYS-FUNCTION before this component (see
+    // attachEntryProps below), so the hook count never varies between
+    // renders. Without this read the append in addPaths/expandContent
+    // degenerated into a replace — setDraft clears the WHOLE editor document.
+    const draftNow = props.useInput((s) => (s && typeof s.draft === 'string' ? s.draft : ''))
 
     const loadDir = async (path) => {
       const seq = ++listSeq.current
@@ -314,8 +315,41 @@ exports.apply = function apply(ctx) {
     return React.createElement(React.Fragment, null, btn, backdrop)
   }
 
+  // ---- crash isolation --------------------------------------------------
+  // DSH's SlotErrorBoundary ABDICATES a slot entry whose render throws — the
+  // button vanished from the GUI until a page refresh. Wrap our control in a
+  // private boundary instead: a crash degrades to a retry button and the
+  // registration survives.
+  class AttachBoundary extends React.Component {
+    constructor(props) { super(props); this.state = { error: null } }
+    static getDerivedStateFromError(error) { return { error: error } }
+    componentDidCatch(error) {
+      try { console.error('attach-files render crashed:', error) } catch (e) { /* ignore */ }
+    }
+    render() {
+      if (this.state.error !== null) {
+        const msg = this.state.error && this.state.error.message ? this.state.error.message : String(this.state.error)
+        return React.createElement('button', {
+          className: 'dsh-attach-btn',
+          title: '插件出错（点击重试）：' + msg,
+          onClick: () => this.setState({ error: null }),
+        }, '📁 添加文件 ⟳')
+      }
+      return this.props.children
+    }
+  }
+
+  // Normalize the entry props so AttachControl may call props.useInput
+  // UNCONDITIONALLY (stable hook count across renders — the Rules of Hooks).
+  const useNoInput = () => ''
+  function attachEntryProps(props) {
+    if (typeof props.useInput === 'function') return props
+    return Object.assign({}, props, { useInput: useNoInput })
+  }
+
   slots.inject('conversation.input.left', () => slots.register(
     { name: 'conversation.input.left', id: 'attach-files', label: '添加文件/目录' },
-    (props) => React.createElement(AttachControl, props),
+    (props) => React.createElement(AttachBoundary, null,
+      React.createElement(AttachControl, attachEntryProps(props))),
   ))
 }

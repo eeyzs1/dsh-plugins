@@ -47,6 +47,10 @@ return {
       if (i < 0) return ''
       let parent = s.slice(0, i)
       if (/^[A-Za-z]:$/.test(parent)) parent += '\\'
+      // POSIX: one level below root slices to '' — the root itself is a valid
+      // destination ('/Users' → '/'). Without this the picker could never
+      // navigate up to '/', stranding the user at /Users on macOS.
+      if (parent === '' && s.startsWith('/')) return '/'
       return parent
     }
 
@@ -71,14 +75,12 @@ return {
       const listSeq = React.useRef(0)
 
       // Live composer text via the session-standard useInput selector
-      // (clipboard-text projection of the editor document); props.input.draft
-      // is the legacy shape kept as fallback. Without this read the append in
-      // addPaths/expandContent degenerated into a replace — setDraft clears
-      // the WHOLE editor document, wiping what the user typed before the picker.
-      const useInput = typeof props.useInput === 'function' ? props.useInput : null
-      const draftNow = useInput !== null
-        ? useInput((s) => (s && typeof s.draft === 'string' ? s.draft : ''))
-        : (props.input && typeof props.input.draft === 'string' ? props.input.draft : '')
+      // (clipboard-text projection of the editor document). The prop is
+      // normalized to an ALWAYS-FUNCTION before this component (see
+      // attachEntryProps), so the hook count never varies between renders.
+      // Without this read the append in addPaths/expandContent degenerated
+      // into a replace — setDraft clears the WHOLE editor document.
+      const draftNow = props.useInput((s) => (s && typeof s.draft === 'string' ? s.draft : ''))
 
       const loadDir = async (path) => {
         const seq = ++listSeq.current
@@ -289,9 +291,40 @@ return {
       return React.createElement(React.Fragment, null, btn, backdrop)
     }
 
+    // Crash isolation: DSH's SlotErrorBoundary ABDICATES a slot entry whose
+    // render throws — the button vanished until a page refresh. A private
+    // boundary degrades to a retry button and keeps the registration alive.
+    class AttachBoundary extends React.Component {
+      constructor(props) { super(props); this.state = { error: null } }
+      static getDerivedStateFromError(error) { return { error: error } }
+      componentDidCatch(error) {
+        try { console.error('attach-files render crashed:', error) } catch (e) { /* ignore */ }
+      }
+      render() {
+        if (this.state.error !== null) {
+          const msg = this.state.error && this.state.error.message ? this.state.error.message : String(this.state.error)
+          return React.createElement('button', {
+            className: 'dsh-attach-btn',
+            title: '插件出错（点击重试）：' + msg,
+            onClick: () => this.setState({ error: null }),
+          }, '📁 添加文件 ⟳')
+        }
+        return this.props.children
+      }
+    }
+
+    // Normalize entry props so AttachControl calls props.useInput
+    // UNCONDITIONALLY (stable hook count — the Rules of Hooks).
+    const useNoInput = () => ''
+    function attachEntryProps(props) {
+      if (typeof props.useInput === 'function') return props
+      return Object.assign({}, props, { useInput: useNoInput })
+    }
+
     slots.inject('conversation.input.left', () => slots.register(
       { name: 'conversation.input.left', id: 'attach-files', label: '添加文件/目录' },
-      (props) => React.createElement(AttachControl, props),
+      (props) => React.createElement(AttachBoundary, null,
+        React.createElement(AttachControl, attachEntryProps(props))),
     ))
   },
 }
